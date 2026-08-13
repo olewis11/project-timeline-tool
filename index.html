@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Project Timeline Tool</title>
+<title>TimelineIQ</title>
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -70,6 +70,7 @@ const PROD_PHASES=[{id:7,name:"Launch",color:"#1a5276"},{id:8,name:"Sustain",col
 const DEFAULT_PCTS=[0.06,0.09,0.12,0.20,0.23,0.20,0.10];
 const DEFAULT_LAUNCH_WK=52,DEFAULT_SUSTAIN_WK=78,POST_SOP_DISPLAY=91;
 const GATE_COLOR="#f5c800",TR_COLOR="#1a6fba",BUILD_BAR_H=40,MAX_HISTORY=30;
+const CUSTOM_LANE_COLORS=["#7c3aed","#0891b2","#059669","#d97706","#dc2626","#db2777","#4f46e5","#b45309"];
 const COMPARE_ACCENTS=["#3b82f6","#f59e0b","#10b981","#a855f7","#ef4444"];
 const PROD_PHASE_DESC={7:"LRIP, GA, scale production ramp.",8:"Full-rate production."};
 const GATE_DESC=["Conceive phase exit","Define phase exit","Plan phase exit","Design phase exit","Refine phase exit","Verify phase exit · Model Fix","Qualify phase exit · Start of Production","Launch phase exit"];
@@ -129,6 +130,19 @@ function addY(d, n) { const r = new Date(d); r.setFullYear(r.getFullYear() + n);
 function dBetw(a, b) { return Math.max(7, Math.round((b - a) / 864e5)); }
 function pc(x) { return (x * 100) + "%"; }
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+function packLanes(items){
+  if(!items.length)return[];
+  const order=items.map((_,i)=>i).sort((a,b)=>items[a].x1-items[b].x1);
+  const laneEnds=[];const result=new Array(items.length);
+  for(const i of order){
+    const{x1,x2}=items[i];
+    let lane=laneEnds.findIndex(e=>e<=x1);
+    if(lane<0){lane=laneEnds.length;laneEnds.push(-Infinity);}
+    laneEnds[lane]=x2;
+    result[i]=lane;
+  }
+  return result;
+}
 function makeDefaultDbList() {
   return BUILD_FAMILIES.map((f, i) => ({key:i, family:f.letter, seq:1, phase:f.phase, s:f.s, e:f.e}));
 }
@@ -136,40 +150,6 @@ function maxKey(list) { return list.reduce((m, b) => Math.max(m, b.key), -1) + 1
 function resequence(list, fam) {
   let seq = 1;
   return list.map(b => b.family === fam ? {...b, seq: seq++} : b);
-}
-// Assign vertical stacking levels to diamond milestones that would overlap.
-// items: [{id,x,label,sub}] — x is a fraction [0,1], sub may be undefined.
-// cw: timeline container width in px.
-// Returns {[id]: levelIndex} — 0 = default row, 1 = one step down, etc.
-function resolveDiamondLevels(items,cw){
-  if(!cw||items.length<2)return{};
-  const sorted=[...items].sort((a,b)=>a.x-b.x);
-  const lvls=[],out={};
-  for(const it of sorted){
-    const hw=(Math.max((it.label||"").length,(it.sub||"").length)*6.5+10)/2/cw;
-    let ok=false;
-    for(let l=0;l<lvls.length;l++){
-      if(lvls[l].every(e=>Math.abs(it.x-e.x)>hw+e.hw)){lvls[l].push({x:it.x,hw});out[it.id]=l;ok=true;break;}
-    }
-    if(!ok){lvls.push([{x:it.x,hw}]);out[it.id]=lvls.length-1;}
-  }
-  return out;
-}
-// Assign vertical stacking levels to bars that overlap in x-range.
-// items: [{id,x1,x2}] — x1,x2 are fractions [0,1].
-// Returns {[id]: levelIndex}
-function resolveBarLevels(items){
-  if(items.length<2)return{};
-  const sorted=[...items].sort((a,b)=>a.x1-b.x1);
-  const lvls=[],out={};
-  for(const it of sorted){
-    let ok=false;
-    for(let l=0;l<lvls.length;l++){
-      if(lvls[l].every(e=>it.x1>=e.x2-0.001||it.x2<=e.x1+0.001)){lvls[l].push({x1:it.x1,x2:it.x2});out[it.id]=l;ok=true;break;}
-    }
-    if(!ok){lvls.push([{x1:it.x1,x2:it.x2}]);out[it.id]=lvls.length-1;}
-  }
-  return out;
 }
 function buildLabel(fam, seq, siblings) { return siblings > 1 ? `${fam}${seq}` : `${fam}-Build`; }
 function today0() { const d = new Date(); d.setHours(0, 0, 0, 0); return d; }
@@ -267,7 +247,7 @@ function padCanvas(src,bg,pad=48){
   return out;
 }
 
-function exportCSVFull(snap,mode,gran,startDate,sopDate,launchEndDate,sustainEndDate,devDays,n,devPhaseStart,devPhaseEnd,devPhaseDate,dbList,trVisible,trPos,launchWeeks,sustainWeeks,testBars){
+function exportCSVFull(snap,mode,gran,startDate,sopDate,launchEndDate,sustainEndDate,devDays,n,devPhaseStart,devPhaseEnd,devPhaseDate,dbList,trVisible,trPos,launchWeeks,sustainWeeks,testBars,customLanes){
   const fmt=d=>fmtD(d);
   const meta={snap:{...snap,anchor:toInp(snap.anchor)},mode,gran};
   const metaRow=[CSV_META+JSON.stringify(meta),"","","","","",""];
@@ -277,6 +257,7 @@ function exportCSVFull(snap,mode,gran,startDate,sopDate,launchEndDate,sustainEnd
   DEFAULT_TR.forEach((tr,i)=>{if(!trVisible[i])return;const d=devPhaseDate(tr.phase,trPos[i]);rows.push([`${tr.id} – ${tr.desc}`,fmt(d),fmt(d),0,"","",tr.desc]);});
   dbList.forEach(b=>{const siblings=dbList.filter(x=>x.family===b.family).length;const lbl=buildLabel(b.family,b.seq,siblings);const ds=devPhaseDate(b.phase,b.s),de=devPhaseDate(b.phase,b.e);rows.push([lbl,fmt(ds),fmt(de),Math.round((de-ds)/864e5),"","","Robot Build"]);});
   testBars.forEach(b=>{const ds=devPhaseDate(b.phase,b.s),de=devPhaseDate(b.phase,b.e);rows.push([b.id,fmt(ds),fmt(de),Math.round((de-ds)/864e5),"","","Testing"]);});
+  (customLanes||[]).forEach(lane=>{(lane.bars||[]).forEach(b=>{const ds=devPhaseDate(b.phase,b.s),de=devPhaseDate(b.phase,b.e);rows.push([b.id,fmt(ds),fmt(de),Math.round((de-ds)/864e5),"","",lane.name]);});});
   rows.push(["Ph7 – Launch",fmt(sopDate),fmt(launchEndDate),launchWeeks*7,"","","LRIP, GA, scale production ramp"]);
   rows.push(["Ph8 – Sustain",fmt(launchEndDate),fmt(sustainEndDate),sustainWeeks*7,"","","Full-rate production"]);
   const all=[metaRow,...rows];
@@ -293,24 +274,150 @@ function importCSV(text,initSnap){
     try{
       const meta=JSON.parse((ff[0]||"").slice(CSV_META.length));
       const s=meta.snap;
-      return{snap:{pcts:Array.isArray(s.pcts)&&s.pcts.length===PHASES.length?s.pcts:[...DEFAULT_PCTS],trPos:s.trPos||DEFAULT_TR.map(r=>r.pos),trVisible:s.trVisible||DEFAULT_TR.map(()=>true),dbList:Array.isArray(s.dbList)?s.dbList:makeDefaultDbList(),testBars:Array.isArray(s.testBars)?s.testBars:[],anchor:frInp(s.anchor),durDays:s.durDays||Math.round(365.25*2),launchWeeks:s.launchWeeks||DEFAULT_LAUNCH_WK,sustainWeeks:s.sustainWeeks||DEFAULT_SUSTAIN_WK,completed:s.completed||{}},mode:meta.mode,gran:meta.gran};
+      return{snap:{pcts:Array.isArray(s.pcts)&&s.pcts.length===PHASES.length?s.pcts:[...DEFAULT_PCTS],trPos:s.trPos||DEFAULT_TR.map(r=>r.pos),trVisible:s.trVisible||DEFAULT_TR.map(()=>true),dbList:Array.isArray(s.dbList)?s.dbList:makeDefaultDbList(),testBars:Array.isArray(s.testBars)?s.testBars:[],anchor:frInp(s.anchor),durDays:s.durDays||Math.round(365.25*2),launchWeeks:s.launchWeeks||DEFAULT_LAUNCH_WK,sustainWeeks:s.sustainWeeks||DEFAULT_SUSTAIN_WK,completed:s.completed||{},customTrs:Array.isArray(s.customTrs)?s.customTrs:[],customGates:Array.isArray(s.customGates)?s.customGates:[],customLanes:Array.isArray(s.customLanes)?s.customLanes:[],buildMilestones:Array.isArray(s.buildMilestones)?s.buildMilestones:[],testMilestones:Array.isArray(s.testMilestones)?s.testMilestones:[],gateBars:Array.isArray(s.gateBars)?s.gateBars:[],reviewBars:Array.isArray(s.reviewBars)?s.reviewBars:[]},mode:meta.mode,gran:meta.gran};
     }catch{}
   }
   const header=lines[0].replace(/^\uFEFF/,"");
   const cols=header.split(",").map(c=>c.replace(/^"|"$/g,"").trim());
   const ni=cols.findIndex(c=>/task.?name/i.test(c)),si=cols.findIndex(c=>/start.?date/i.test(c)),ei=cols.findIndex(c=>/end.?date/i.test(c));
   if(ni<0||si<0||ei<0)return null;
+
+  // Parse rows — track whether end date differs from start (duration bar vs point milestone)
   const rows=[];
-  for(let i=1;i<lines.length;i++){const line=lines[i];if(!line.trim())continue;const fields=pf(line);const name=(fields[ni]||"").trim(),ss=(fields[si]||"").trim(),es=(fields[ei]||"").trim();if(!name||!ss)continue;const start=new Date(ss),end=es?new Date(es):start;if(isNaN(start))continue;rows.push({name,start,end:isNaN(end)?start:end});}
+  for(let i=1;i<lines.length;i++){
+    const line=lines[i];if(!line.trim())continue;
+    const fields=pf(line);
+    const name=(fields[ni]||"").trim(),ss=(fields[si]||"").trim(),es=(fields[ei]||"").trim();
+    if(!name||!ss)continue;
+    const start=new Date(ss),end=es&&es!==ss?new Date(es):null;
+    if(isNaN(start))continue;
+    rows.push({name,start,end:end&&!isNaN(end)?end:null});
+  }
   if(!rows.length)return null;
-  const pr=PHASES.map((_,i)=>rows.find(r=>new RegExp(`Ph${i}[\\s–-]`,"i").test(r.name)));
-  const ph0=pr[0],ph6=pr[6];if(!ph0||!ph6)return null;
-  const startDate=ph0.start,sopDate=addD(ph6.end,1);
-  const durDays=Math.max(7,Math.round((sopDate-startDate)/864e5));
-  let pcts=[...DEFAULT_PCTS];
-  if(pr.every(Boolean)){const rd=pr.map(r=>Math.max(1,Math.round((r.end-r.start)/864e5)+1));const total=rd.reduce((a,b)=>a+b,0);pcts=rd.map(d=>d/total);}
-  const lr=rows.find(r=>/Ph7|Launch/i.test(r.name)),sr=rows.find(r=>/Ph8|Sustain/i.test(r.name));
-  return{snap:{...initSnap,pcts,anchor:startDate,durDays,launchWeeks:lr?Math.max(4,Math.round((lr.end-lr.start)/864e5/7)):DEFAULT_LAUNCH_WK,sustainWeeks:sr?Math.max(4,Math.round((sr.end-sr.start)/864e5/7)):DEFAULT_SUSTAIN_WK},mode:"forward",gran:"quarterly"};
+
+  // --- Phase structure ---
+  const pr=PHASES.map((_,i)=>rows.find(r=>new RegExp(`^Ph${i}[\\s–\\-]`,"i").test(r.name)));
+  const ph0=pr[0],ph6=pr[6];
+  const hasPhaseRows=!!(ph0&&ph6);
+  let anchor,durDays,pcts;
+  if(hasPhaseRows){
+    anchor=ph0.start;
+    const sopDate=addD(ph6.end,1);
+    durDays=Math.max(7,Math.round((sopDate-anchor)/864e5));
+    if(pr.every(Boolean)){const rd=pr.map(r=>Math.max(1,Math.round((r.end-r.start)/864e5)+1));const total=rd.reduce((a,b)=>a+b,0);pcts=normP(rd.map(d=>d/total));}
+    else pcts=[...DEFAULT_PCTS];
+  }else{
+    // No phase rows — use current snap's structure so milestone dates land correctly
+    anchor=new Date(initSnap.anchor);durDays=initSnap.durDays;pcts=[...initSnap.pcts];
+  }
+  const lr=rows.find(r=>/^Ph7[\s–\-]|^Launch\b/i.test(r.name));
+  const sr=rows.find(r=>/^Ph8[\s–\-]|^Sustain\b/i.test(r.name));
+  const launchWeeks=lr&&lr.end?Math.max(4,Math.round((lr.end-lr.start)/864e5/7)):(initSnap.launchWeeks||DEFAULT_LAUNCH_WK);
+  const sustainWeeks=sr&&sr.end?Math.max(4,Math.round((sr.end-sr.start)/864e5/7)):(initSnap.sustainWeeks||DEFAULT_SUSTAIN_WK);
+
+  // Converts an absolute Date to {phase 0-6, pos 0-1 within that phase}
+  function d2p(d){
+    const ms=durDays*864e5,el=(d-anchor)/ms;
+    if(el<=0)return{phase:0,pos:0};
+    let cum=0;
+    for(let i=0;i<7;i++){const nx=cum+pcts[i];if(el<=nx||i===6)return{phase:i,pos:clamp(pcts[i]>0?(el-cum)/pcts[i]:0,0,1)};cum=nx;}
+    return{phase:6,pos:1};
+  }
+
+  // Working arrays — fresh for all non-phase elements
+  const trPos=[...DEFAULT_TR.map(r=>r.pos)];
+  const trVisible=[...DEFAULT_TR.map(()=>true)];
+  const customTrs=[];
+  const dbList=makeDefaultDbList();
+  const buildMilestones=[];
+  const testBars=[];
+  const testMilestones=[];
+  const laneItems={}; // laneName → {bars:[], milestones:[]}
+  let nReviews=0,nBuilds=0,nTests=0,nCustom=0;
+
+  for(const row of rows){
+    const n=row.name;
+    // Skip phase rows and built-in gate rows (positions are implicit in phase structure)
+    if(/^Ph[0-8][\s–\-]/i.test(n)||/^G(?:ate)?\s*[0-7]\b/i.test(n))continue;
+
+    // ── Technical Reviews ──────────────────────────────────────────────────
+    const ri=DEFAULT_TR.findIndex(r=>new RegExp('\\b'+r.id+'\\b','i').test(n));
+    if(ri>=0){
+      const{phase,pos}=d2p(row.start);
+      if(phase===DEFAULT_TR[ri].phase){trPos[ri]=pos;}
+      else{
+        // Review fell in a different phase than expected — store as customTr with explicit phase
+        customTrs.push({key:customTrs.length,id:DEFAULT_TR[ri].id,phase,pos,desc:DEFAULT_TR[ri].desc});
+        trVisible[ri]=false;
+      }
+      nReviews++;continue;
+    }
+
+    // ── Build bars / samples ───────────────────────────────────────────────
+    const bm=n.match(/\b([DABC]).?(?:build|sample)/i);
+    if(bm){
+      const fam=bm[1].toUpperCase(),bi=dbList.findIndex(b=>b.family===fam);
+      if(bi>=0){
+        if(row.end){
+          // Full bar: both start and end dates provided
+          const{phase,pos:s}=d2p(row.start);const{pos:e}=d2p(row.end);
+          dbList[bi]={...dbList[bi],phase,s,e};
+        }else{
+          // Delivery date only — set as bar endpoint; approximate start 25% of phase earlier
+          const{phase,pos:e}=d2p(row.start);
+          dbList[bi]={...dbList[bi],phase,s:Math.max(0,e-0.25),e};
+        }
+      }
+      nBuilds++;continue;
+    }
+
+    // ── Test events (EVT / DVT) ────────────────────────────────────────────
+    const testM=n.match(/\b(EVT|DVT)\b/i);
+    if(testM){
+      const id=testM[1].toUpperCase();
+      if(row.end){
+        const{phase,pos:s}=d2p(row.start);const{pos:e}=d2p(row.end);
+        testBars.push({key:testBars.length,id,phase,s,e});
+      }else{
+        const{phase,pos}=d2p(row.start);
+        testMilestones.push({key:testMilestones.length,id,phase,pos});
+      }
+      nTests++;continue;
+    }
+
+    // ── Everything else → custom lane ─────────────────────────────────────
+    const lname="Imported";
+    if(!laneItems[lname])laneItems[lname]={bars:[],milestones:[]};
+    if(row.end){const{phase,pos:s}=d2p(row.start);const{pos:e}=d2p(row.end);laneItems[lname].bars.push({id:n,phase,s,e});}
+    else{const{phase,pos}=d2p(row.start);laneItems[lname].milestones.push({id:n,phase,pos});}
+    nCustom++;
+  }
+
+  // Build custom lanes from collected items
+  const customLanes=[];
+  Object.entries(laneItems).forEach(([lname,items],idx)=>{
+    customLanes.push({key:idx,name:lname,color:CUSTOM_LANE_COLORS[idx%CUSTOM_LANE_COLORS.length],
+      bars:items.bars.map((b,i)=>({...b,key:i})),
+      milestones:items.milestones.map((m,i)=>({...m,key:i}))});
+  });
+
+  // Human-readable summary of what was detected
+  const parts=[];
+  if(hasPhaseRows)parts.push("phase structure");
+  if(nReviews)parts.push(`${nReviews} review${nReviews>1?"s":""}`);
+  if(nBuilds)parts.push(`${nBuilds} build item${nBuilds>1?"s":""}`);
+  if(nTests)parts.push(`${nTests} test event${nTests>1?"s":""}`);
+  if(nCustom)parts.push(`${nCustom} custom item${nCustom>1?"s":""}`);
+
+  return{snap:{
+    ...initSnap,pcts,anchor,durDays,launchWeeks,sustainWeeks,
+    trPos,trVisible,customTrs,
+    dbList,buildMilestones,
+    testBars,testMilestones,
+    gateBars:[],reviewBars:[],
+    customLanes,customGates:[],completed:{}
+  },mode:"forward",gran:"quarterly",
+  summary:parts.length?`Detected: ${parts.join(", ")}.`:""};
 }
 
 function useUndoable(initial){
@@ -340,7 +447,7 @@ function BugModal({t,isDark,onClose}){
   const[text,setText]=useState("");
   function submit(){
     if(!text.trim())return;
-    const subject=encodeURIComponent("Project Timeline Tool Bug Report");
+    const subject=encodeURIComponent("TimelineIQ Bug Report");
     const body=encodeURIComponent(text.trim());
     window.open(`mailto:oliver.majer.lewis+git@gmail.com?subject=${subject}&body=${body}`);
     onClose();
@@ -389,7 +496,7 @@ function PhaseTooltip({phase,idx,startDate,endDate,pct,devDays,t,completed,hasOp
 }
 
 // Diamond
-function Diamond({x,label,sub,color,sz=12,tc,sc,date,desc,t,onDragStart,onDelete,completed,onToggleComplete,onRename,topOffset=0}){
+function Diamond({x,label,sub,color,sz=12,tc,sc,date,desc,t,onDragStart,onDelete,completed,onToggleComplete,onRename,topOffset=18}){
   const[hov,setHov]=useState(false);const timer=useRef(null);const showTimer=useRef(null);
   const elemRef=useRef(null);
   const renameInputRef=useRef(null);
@@ -418,7 +525,7 @@ function Diamond({x,label,sub,color,sz=12,tc,sc,date,desc,t,onDragStart,onDelete
   return(
     <div ref={elemRef} onDoubleClick={e=>e.stopPropagation()}
          onContextMenu={hasActions?e=>{e.preventDefault();e.stopPropagation();setMenuPos({x:e.clientX,y:e.clientY});}:undefined}
-         style={{position:"absolute",left:pc(x),transform:"translateX(-50%)",display:"inline-flex",flexDirection:"column",alignItems:"center",top:18+topOffset,transition:"top 0.15s",zIndex:hov||menuPos||renaming?60:5,cursor:onDragStart?"ew-resize":"default"}}
+         style={{position:"absolute",left:pc(x),transform:"translateX(-50%)",display:"inline-flex",flexDirection:"column",alignItems:"center",top:topOffset,zIndex:hov||menuPos||renaming?60:5,cursor:onDragStart?"ew-resize":"default"}}
          onMouseEnter={enter} onMouseLeave={leave} onMouseDown={onDragStart}>
       {hov&&date&&!menuPos&&!renaming&&(
         <div onMouseEnter={enter} onMouseLeave={leave} style={{position:"absolute",bottom:"100%",left:"50%",transform:"translateX(-50%)",paddingBottom:10,zIndex:300,pointerEvents:"all",display:"flex",flexDirection:"column",alignItems:"center"}}>
@@ -474,7 +581,7 @@ function Diamond({x,label,sub,color,sz=12,tc,sc,date,desc,t,onDragStart,onDelete
 }
 
 // Generic draggable bar (used for builds and testing)
-function DragBar({x1,x2,label,dateStart,dateEnd,t,onDragLeft,onDragRight,onDragBody,onDelete,onSplit,barColor,isDark,completed,onToggleComplete,onRename,topOffset=0}){
+function DragBar({x1,x2,label,dateStart,dateEnd,t,onDragLeft,onDragRight,onDragBody,onDelete,onSplit,barColor,isDark,completed,onToggleComplete,onRename,topOffset=14}){
   const[hov,setHov]=useState(false);const timer=useRef(null);const showTimer=useRef(null);
   const elemRef=useRef(null);
   const renameInputRef=useRef(null);
@@ -499,12 +606,12 @@ function DragBar({x1,x2,label,dateStart,dateEnd,t,onDragLeft,onDragRight,onDragB
   if(x2<=x1)return null;
   const bg=barColor||"#b94a08";
   const bgHov=barColor?barColor+"cc":"#d4550a";
-  const barTop=Math.round((BUILD_BAR_H+28-BUILD_BAR_H)/2);
+  // barTop replaced by topOffset prop for dynamic lane stacking
   const mItem=(danger)=>({fontSize:12,color:danger?"#e05a5a":t.text,cursor:"pointer",padding:"6px 14px",background:"transparent",border:"none",textAlign:"left",width:"100%",display:"block",whiteSpace:"nowrap",fontWeight:danger?700:500});
   return(
     <div ref={elemRef} onDoubleClick={e=>e.stopPropagation()}
          onContextMenu={e=>{e.preventDefault();e.stopPropagation();setMenuPos({x:e.clientX,y:e.clientY});}}
-         style={{position:"absolute",left:pc(x1),width:pc(x2-x1),top:barTop+topOffset,transition:"top 0.15s",zIndex:hov||menuPos||renaming?50:5,height:BUILD_BAR_H+20}}
+         style={{position:"absolute",left:pc(x1),width:pc(x2-x1),top:topOffset,zIndex:hov||menuPos||renaming?50:5,height:BUILD_BAR_H+20}}
          onMouseEnter={enter} onMouseLeave={leave}>
       {hov&&!menuPos&&!renaming&&(
         <div onMouseEnter={enter} onMouseLeave={leave} style={{position:"absolute",bottom:"100%",left:"50%",transform:"translateX(-50%)",paddingBottom:10,zIndex:300,pointerEvents:"all"}}>
@@ -609,21 +716,36 @@ function DateCell({date,onChange,t,isDark,readOnly}){
 
 function CreateDialog({pending,onConfirm,onCancel,t}){
   const[name,setName]=useState("");
-  const titles={build:"New Robot Build",test:"New Test Bar",customTr:"New Tech Review",customGate:"New Gate Marker"};
-  const hints={build:"e.g. Pilot Build, EVT, DVT…",test:"e.g. Integration Test, Qual Test…",customTr:"e.g. Design Review, Program Kickoff…",customGate:"e.g. G1.5, Program Go / No-Go…"};
+  const[itemType,setItemType]=useState(pending.defaultItemType||"bar");
+  const rowTitles={buildRow:"Builds Row",testRow:"Testing Row",gateRow:"Gates Row",reviewRow:"Reviews Row",customLaneBar:"Custom Lane"};
+  const title=pending.type==="customLane"?"New Swimlane":pending.allowBoth?(rowTitles[pending.type]||"New Item"):(pending.type==="build"||pending.type==="test"?"New Bar":pending.type==="customTr"||pending.type==="customGate"?"New Milestone":"New Item");
+  const milHints={buildRow:"e.g. Proto Freeze, Safety Check…",testRow:"e.g. Test Start, Pass/Fail…",gateRow:"e.g. G1.5, Proto Go/No-Go…",reviewRow:"e.g. KickOff, Program Review…",customLaneBar:"e.g. Alpha, Milestone 1…"};
+  const barHints={buildRow:"e.g. Pilot Build, DVT…",testRow:"e.g. Load Test, Thermal…",gateRow:"e.g. Planning Window…",reviewRow:"e.g. Review Period…",customLaneBar:"e.g. Alpha, Sprint 1…"};
+  const hint=pending.allowBoth?(itemType==="milestone"?milHints[pending.type]||"Name…":barHints[pending.type]||"Name…"):(pending.type==="customLane"?"e.g. Firmware, Integration…":"Name…");
   const left=Math.min(pending.clientX,window.innerWidth-276);
-  const top=Math.max(10,pending.clientY-100);
+  const top=Math.max(10,pending.clientY-110);
+  const tBtn=(active)=>({padding:"5px 12px",borderRadius:4,border:"1px solid "+(active?t.btnAct:t.border),cursor:"pointer",fontSize:12,fontWeight:700,background:active?t.btnAct:t.btnBg,color:active?"#fff":t.btnText,transition:"all 0.12s",display:"flex",alignItems:"center",gap:5});
   return(
     <div style={{position:"fixed",inset:0,zIndex:3000}} onMouseDown={onCancel}>
-      <div style={{position:"fixed",left,top,zIndex:3001,background:t.panel,border:"1px solid "+t.border,borderRadius:8,padding:"14px 16px",boxShadow:"0 8px 32px rgba(0,0,0,0.32)",width:260}} onMouseDown={e=>e.stopPropagation()}>
-        <div style={{fontSize:12,fontWeight:700,color:t.textMuted,textTransform:"uppercase",letterSpacing:0.5,marginBottom:10}}>{titles[pending.type]||"New Item"}</div>
+      <div style={{position:"fixed",left,top,zIndex:3001,background:t.panel,border:"1px solid "+t.border,borderRadius:8,padding:"14px 16px",boxShadow:"0 8px 32px rgba(0,0,0,0.32)",width:264}} onMouseDown={e=>e.stopPropagation()}>
+        <div style={{fontSize:12,fontWeight:700,color:t.textMuted,textTransform:"uppercase",letterSpacing:0.5,marginBottom:pending.allowBoth?8:10}}>{title}</div>
+        {pending.allowBoth&&(
+          <div style={{display:"flex",gap:6,marginBottom:10}}>
+            <button onMouseDown={()=>setItemType("bar")} style={tBtn(itemType==="bar")}>
+              <svg width={13} height={8} viewBox="0 0 13 8"><rect x={0} y={1} width={13} height={6} rx={2} fill="currentColor"/></svg>Bar
+            </button>
+            <button onMouseDown={()=>setItemType("milestone")} style={tBtn(itemType==="milestone")}>
+              <svg width={10} height={10} viewBox="0 0 10 10"><polygon points="5,0.5 9.5,5 5,9.5 0.5,5" fill="currentColor"/></svg>Milestone
+            </button>
+          </div>
+        )}
         <input autoFocus value={name} onChange={e=>setName(e.target.value)}
-          onKeyDown={e=>{if(e.key==="Enter"&&name.trim())onConfirm(name.trim());if(e.key==="Escape")onCancel();}}
-          placeholder={hints[pending.type]||"Name…"}
+          onKeyDown={e=>{if(e.key==="Enter"&&name.trim())onConfirm(name.trim(),itemType);if(e.key==="Escape")onCancel();}}
+          placeholder={hint}
           style={{width:"100%",fontSize:13,padding:"6px 9px",borderRadius:4,border:"1px solid "+t.inBorder,background:t.inBg,color:t.inText,outline:"none",marginBottom:10,boxSizing:"border-box"}}/>
         <div style={{display:"flex",gap:7,justifyContent:"flex-end"}}>
           <button onMouseDown={onCancel} style={{padding:"5px 13px",borderRadius:4,border:"1px solid "+t.border,cursor:"pointer",fontSize:12,fontWeight:600,background:t.btnBg,color:t.btnText}}>Cancel</button>
-          <button onMouseDown={()=>name.trim()&&onConfirm(name.trim())} style={{padding:"5px 14px",borderRadius:4,border:"none",cursor:"pointer",fontSize:12,fontWeight:700,background:t.btnAct,color:"#fff",opacity:name.trim()?1:0.45,transition:"opacity 0.15s"}}>Create</button>
+          <button onMouseDown={()=>name.trim()&&onConfirm(name.trim(),itemType)} style={{padding:"5px 14px",borderRadius:4,border:"none",cursor:"pointer",fontSize:12,fontWeight:700,background:t.btnAct,color:"#fff",opacity:name.trim()?1:0.45,transition:"opacity 0.15s"}}>Create</button>
         </div>
       </div>
     </div>
@@ -831,7 +953,7 @@ function ScenarioTable({scenarios,loading,saveError,setSaveError,scenarioName,se
 }
 
 // ── SharedScenarioTable ───────────────────────────────────────────────────────
-function SharedScenarioTable({sharedScenarios,loading,shareError,currentUser,displayName,onRestore,onUnpublish,onDuplicate,onRenameShared,onRefresh,compareIds,onToggleCompare,t,isDark}){
+function SharedScenarioTable({sharedScenarios,loading,shareError,currentUser,onRestore,onUnpublish,onDuplicate,onRenameShared,onRefresh,compareIds,onToggleCompare,t,isDark}){
   const[collapsed,setCollapsed]=useState(false);
   const[confirmUnpub,setConfirmUnpub]=useState(null);
   const[search,setSearch]=useState("");
@@ -960,7 +1082,7 @@ function SharedScenarioTable({sharedScenarios,loading,shareError,currentUser,dis
                   </td>
                   <td style={tdS}>
                     <span title={sc.owner} style={{display:"inline-flex",alignItems:"center",gap:5}}>
-                      <span style={{fontSize:11,background:isDark?"#1a2e48":"#dce8f5",color:t.btnText,borderRadius:3,padding:"1px 6px",fontWeight:700,letterSpacing:0.3}}>{sc.owner===currentUser?(displayName||(sc.owner||"").split("@")[0]):(sc.owner||"").split("@")[0]}</span>
+                      <span style={{fontSize:11,background:isDark?"#1a2e48":"#dce8f5",color:t.btnText,borderRadius:3,padding:"1px 6px",fontWeight:700,letterSpacing:0.3}}>{(sc.owner||"").split("@")[0]}</span>
                       {isOwner&&<span style={{fontSize:10,color:t.textDim,fontStyle:"italic"}}>you</span>}
                     </span>
                   </td>
@@ -1073,7 +1195,7 @@ function ReadOnlyProdBlock({ph,x1,x2,startDate,endDate,durationDays,t}){
   );
 }
 
-function CompareStrip({data,ticks,xFrac,sopX,accentColor,compareAlign,todayFrac,showTodayLine,hiddenRows,t,isDark,currentUser,displayName}){
+function CompareStrip({data,ticks,xFrac,sopX,accentColor,compareAlign,todayFrac,showTodayLine,hiddenRows,t,isDark}){
   const{sc,n,st,devDays,startDate,sopDate,launchDays,postDays,displayEndDate}=data;
   const launchEndDate=addD(sopDate,launchDays);
   const trPos=Array.isArray(sc.trPos)?sc.trPos:DEFAULT_TR.map(r=>r.pos);
@@ -1103,7 +1225,7 @@ function CompareStrip({data,ticks,xFrac,sopX,accentColor,compareAlign,todayFrac,
       {/* Strip header */}
       <div style={{display:"flex",alignItems:"center",gap:10,padding:"8px 14px",background:isDark?"rgba(255,255,255,0.025)":"rgba(0,0,0,0.025)",borderBottom:"1px solid "+t.border}}>
         <span style={{fontSize:14,fontWeight:800,color:t.text,flex:1,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{sc.name}</span>
-        {isPublished&&<span style={{fontSize:11,background:isDark?"#1a2e48":"#dce8f5",color:t.btnText,borderRadius:3,padding:"1px 7px",fontWeight:700,flexShrink:0}}>📢 {sc.owner===currentUser?(displayName||(sc.owner||"").split("@")[0]):(sc.owner||"").split("@")[0]}</span>}
+        {isPublished&&<span style={{fontSize:11,background:isDark?"#1a2e48":"#dce8f5",color:t.btnText,borderRadius:3,padding:"1px 7px",fontWeight:700,flexShrink:0}}>📢 {(sc.owner||"").split("@")[0]}</span>}
         <span style={{fontSize:11,background:isDark?"rgba(255,255,255,0.06)":"rgba(0,0,0,0.05)",borderRadius:4,padding:"2px 8px",color:t.textMuted,fontWeight:600,flexShrink:0,whiteSpace:"nowrap"}}>{fmtW(devDays/7)} dev</span>
         <span style={{fontSize:12,color:t.textMuted,flexShrink:0,whiteSpace:"nowrap"}}>{fmtD(startDate)} → SOP {fmtD(sopDate)}</span>
       </div>
@@ -1229,7 +1351,7 @@ function CompareStrip({data,ticks,xFrac,sopX,accentColor,compareAlign,todayFrac,
 
 function CompareView({selected,compareAlign,setCompareAlign,hiddenRows,toggleRow,todayDate,showTodayLine,toggleTodayLine,t,isDark,onBack,
   scenarios,scenariosLoading,saveError,setSaveError,scenarioName,setScenarioName,onSave,onOverwrite,onRestore,onDelete,onRename,onDuplicate,onRefresh,onPublish,publishedKeys,
-  sharedScenarios,sharedLoading,shareError,onUnpublish,onDuplicateShared,onRenameShared,onRefreshShared,currentUser,displayName,
+  sharedScenarios,sharedLoading,shareError,onUnpublish,onDuplicateShared,onRenameShared,onRefreshShared,currentUser,
   compareIds,onToggleCompare,loadedScenarioKey}){
   const[addOpen,setAddOpen]=useState(false);
   const[exporting,setExporting]=useState(false);
@@ -1338,8 +1460,7 @@ function CompareView({selected,compareAlign,setCompareAlign,hiddenRows,toggleRow
         return<CompareStrip key={d.sc.key} data={d} ticks={tks} xFrac={xFrac} sopX={sopX}
           accentColor={COMPARE_ACCENTS[idx]} compareAlign={compareAlign}
           todayFrac={compareAlign==="date"?todayFrac:null}
-          showTodayLine={showTodayLine} hiddenRows={hiddenRows} t={t} isDark={isDark}
-          currentUser={currentUser} displayName={displayName}/>;
+          showTodayLine={showTodayLine} hiddenRows={hiddenRows} t={t} isDark={isDark}/>;
       })}
       </div>
       {/* Add More Scenarios */}
@@ -1365,7 +1486,7 @@ function CompareView({selected,compareAlign,setCompareAlign,hiddenRows,toggleRow
               compareIds={compareIds||new Set()} onToggleCompare={onToggleCompare||function(){}} loadedKey={loadedScenarioKey}
               t={t} isDark={isDark} showSaveForm={false}/>
             <SharedScenarioTable sharedScenarios={sharedScenarios||[]} loading={!!sharedLoading}
-              shareError={shareError||""} currentUser={currentUser} displayName={displayName}
+              shareError={shareError||""} currentUser={currentUser}
               onRestore={onRestore||function(){}} onUnpublish={onUnpublish||function(){}} onDuplicate={onDuplicateShared||function(){}} onRenameShared={onRenameShared||function(){}} onRefresh={onRefreshShared||function(){}}
               compareIds={compareIds||new Set()} onToggleCompare={onToggleCompare||function(){}}
               t={t} isDark={isDark}/>
@@ -1400,7 +1521,7 @@ function SignInScreen({isDark,setDark,t}){
         ))}
       </div>
       <div style={{width:"100%",maxWidth:400,background:t.cardBg,border:"1px solid "+t.cardBorder,borderRadius:12,padding:"32px 36px",boxShadow:"0 4px 24px rgba(0,0,0,0.10)"}}>
-        <div style={{fontSize:22,fontWeight:800,color:t.text,marginBottom:6,letterSpacing:0.2}}>Project Timeline Tool</div>
+        <div style={{fontSize:22,fontWeight:800,color:t.text,marginBottom:6,letterSpacing:0.2}}>TimelineIQ</div>
         <div style={{fontSize:13,color:t.textMuted,marginBottom:28,lineHeight:1.6}}>Sign in with your email to access your saved scenarios. No password needed — we'll send a magic link.</div>
         {sent?(
           <div style={{textAlign:"center",padding:"20px 0"}}>
@@ -1474,6 +1595,280 @@ function useIsPortrait(){
   return portrait;
 }
 
+// ── Help Page ─────────────────────────────────────────────────────────────────
+function HelpPage({t,isDark,mob,onClose}){
+  const card={background:t.panel,border:"1px solid "+t.border,borderRadius:8,marginBottom:14,overflow:"hidden"};
+  const sHead=(icon,title)=>(
+    <div style={{fontSize:15,fontWeight:800,color:t.text,padding:"12px 16px",borderBottom:"1px solid "+t.border,background:isDark?"rgba(255,255,255,0.018)":"rgba(0,0,0,0.018)",display:"flex",alignItems:"center",gap:9}}>
+      <span style={{fontSize:18,lineHeight:1}}>{icon}</span><span>{title}</span>
+    </div>
+  );
+  const body={padding:"14px 16px 18px",fontSize:13,color:t.textMuted,lineHeight:1.75};
+  const hi={color:t.text,fontWeight:600};
+  const kbd=(k)=><span style={{background:isDark?"#1e2e44":"#e4e9f0",border:"1px solid "+t.border,borderRadius:3,padding:"1px 6px",fontSize:11,fontFamily:"monospace",color:t.text,whiteSpace:"nowrap"}}>{k}</span>;
+  const tip=(content)=><div style={{background:isDark?"rgba(30,96,165,0.14)":"#eef4ff",border:"1px solid "+(isDark?"#1e4a70":"#b8d0f0"),borderRadius:5,padding:"8px 12px",marginTop:10,fontSize:12,lineHeight:1.65,color:isDark?"#9ab8d8":"#2a5890"}}>{content}</div>;
+  const step=(n,content)=>(
+    <div style={{display:"flex",gap:10,marginBottom:8}}>
+      <div style={{width:20,height:20,borderRadius:"50%",background:t.btnAct,color:"#fff",fontSize:11,fontWeight:800,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,marginTop:2}}>{n}</div>
+      <div style={{fontSize:13}}>{content}</div>
+    </div>
+  );
+  const trow=(label,desc)=>(
+    <div style={{display:"flex",gap:8,padding:"6px 0",borderBottom:"1px solid "+t.gridLine}}>
+      <div style={{...hi,minWidth:mob?130:170,flexShrink:0,fontSize:12}}>{label}</div>
+      <div style={{fontSize:12}}>{desc}</div>
+    </div>
+  );
+  return(
+    <div style={{maxWidth:820,margin:"0 auto",paddingBottom:60}}>
+      <div style={{display:"flex",alignItems:"center",gap:14,marginBottom:24,paddingTop:4}}>
+        <button onClick={onClose} style={{padding:"6px 14px",borderRadius:6,border:"1px solid "+t.border,background:t.btnBg,color:t.btnText,cursor:"pointer",fontWeight:700,fontSize:13,display:"flex",alignItems:"center",gap:6,flexShrink:0}}>
+          <svg width={13} height={13} viewBox="0 0 13 13" fill="none"><polyline points="8,2 3,6.5 8,11" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round"/></svg>
+          Back
+        </button>
+        <div>
+          <div style={{fontSize:mob?17:21,fontWeight:800,color:t.text}}>How to Use This Tool</div>
+          <div style={{fontSize:13,color:t.textMuted,marginTop:2}}>A reference guide to all features and interactions</div>
+        </div>
+      </div>
+
+      <div style={card}>
+        {sHead("🗺️","Overview")}
+        <div style={body}>
+          This tool is built for <span style={hi}>early-stage program planning</span> — quickly exploring schedule options before committing to a full project plan. Use it to:
+          <ul style={{margin:"10px 0 4px",paddingLeft:20,display:"flex",flexDirection:"column",gap:4}}>
+            <li>Model development phases and milestone timing</li>
+            <li>Position build, test, and review markers on a visual timeline</li>
+            <li>Try different schedule options (fixed start, fixed SOP, or fixed both ends)</li>
+            <li>Save and compare multiple program scenarios side-by-side</li>
+            <li>Export to CSV (Smartsheet-ready) or PNG for presentations</li>
+          </ul>
+          {tip("This is not a task tracker — it's a schedule explorer. Drag things around, compare options, then export when you're ready for detailed planning.")}
+        </div>
+      </div>
+
+      <div style={card}>
+        {sHead("🚀","Getting Started")}
+        <div style={body}>
+          From the home screen, choose a <span style={hi}>scheduling mode</span> to anchor your timeline:
+          <div style={{display:"flex",flexDirection:"column",gap:8,margin:"12px 0 6px"}}>
+            {[
+              {emoji:"📌 ➡️",name:"Fixed Start",desc:"Set the program start date. SOP floats based on dev duration and phase proportions."},
+              {emoji:"📌 🎯",name:"Fixed SOP",desc:"Set the Start of Production date. The program start floats backward."},
+              {emoji:"📌 📌",name:"Fix Both",desc:"Lock both start and SOP. Phase proportions adjust to fill the fixed span."},
+            ].map(m=>(
+              <div key={m.name} style={{display:"flex",gap:12,padding:"9px 12px",background:isDark?"rgba(255,255,255,0.03)":"#f5f7fa",borderRadius:6,border:"1px solid "+t.border}}>
+                <div style={{fontSize:20,lineHeight:1,flexShrink:0,width:54,textAlign:"center",display:"flex",alignItems:"center",justifyContent:"center"}}>{m.emoji}</div>
+                <div><div style={{...hi,fontSize:13}}>{m.name}</div><div style={{fontSize:12,marginTop:2}}>{m.desc}</div></div>
+              </div>
+            ))}
+            <div style={{display:"flex",gap:12,padding:"9px 12px",background:isDark?"rgba(255,255,255,0.03)":"#f5f7fa",borderRadius:6,border:"1px solid "+t.border}}>
+              <div style={{fontSize:20,flexShrink:0,width:54,display:"flex",alignItems:"center",justifyContent:"center"}}><UploadIcon sz={20} c={t.textMuted}/></div>
+              <div><div style={{...hi,fontSize:13}}>Import CSV</div><div style={{fontSize:12,marginTop:2}}>Load a timeline you previously exported. All phases, bars, milestones, and settings are restored exactly.</div></div>
+            </div>
+          </div>
+          You can also load a saved scenario from the list on the home screen.
+        </div>
+      </div>
+
+      <div style={card}>
+        {sHead("📊","The Timeline View")}
+        <div style={body}>
+          Once you choose a mode, the main timeline view shows:
+          <div style={{display:"flex",flexDirection:"column",gap:0,margin:"10px 0 4px"}}>
+            {trow("Phase bar","The colored header band — broken into Ph0–Ph6 (development) plus Launch and Sustain. Drag dividers between phases to resize them.")}
+            {trow("Ruler","Date tick marks below the phase bar. Switch between Monthly and Quarterly granularity in the Scheduling panel.")}
+            {trow("Swimlane rows","Phase Exit Gates, Tech Reviews, Robot Builds, Testing — each in its own row below the ruler.")}
+            {trow("Custom swimlanes","User-defined rows at the bottom for any additional work stream (firmware, integration, tooling, etc.).")}
+            {trow("Legend","Color swatches at the bottom of the timeline. Click any swatch to show or hide that row.")}
+            {trow("Today line","A vertical dashed line showing today's date. Toggle it in the Scheduling panel.")}
+          </div>
+          {tip("Double-click any empty area in a swimlane to add a new item. Right-click any item for rename, delete, and mark-complete options.")}
+        </div>
+      </div>
+
+      <div style={card}>
+        {sHead("⚙️","Scheduling Controls")}
+        <div style={body}>
+          The <span style={hi}>Scheduling</span> panel (above the timeline) contains date and duration inputs:
+          <div style={{display:"flex",flexDirection:"column",gap:0,margin:"10px 0 4px"}}>
+            {trow("Start date","The program start. Editable in Fixed Start and Fix Both modes; computed in Fixed SOP.")}
+            {trow("SOP date","Start of Production — aligns with Gate G6. Editable in Fixed SOP and Fix Both; floats in Fixed Start.")}
+            {trow("Dev duration","Total development span in days. Locked in Fix Both mode; adjusts automatically in other modes.")}
+            {trow("Launch / Sustain","Post-SOP phase lengths in weeks.")}
+            {trow("Granularity","Monthly vs. quarterly ruler tick spacing.")}
+            {trow("Today line","Toggle the vertical dashed line marking today's date.")}
+          </div>
+          The <span style={hi}>Table View</span> expands below the scheduling panel to show each phase as a percentage of total dev time, with computed start/end dates and durations. Drag phase dividers on the timeline or edit values in the table — both stay in sync.
+        </div>
+      </div>
+
+      <div style={card}>
+        {sHead("🎨","Phase Bars")}
+        <div style={body}>
+          Each colored strip in the timeline header is a development phase. <span style={hi}>Drag the divider between two adjacent phases</span> to redistribute their relative durations.
+          <div style={{marginTop:10,display:"flex",flexDirection:"column",gap:0}}>
+            {trow("Fixed Start / Fixed SOP","Dragging a divider adjusts only the two neighboring phases; overall dev duration is recomputed.")}
+            {trow("Fix Both mode","Dragging a divider shifts proportions while the total duration stays locked.")}
+          </div>
+          {tip("Phase sizes are stored as proportional fractions — they scale cleanly if you later change the total program duration.")}
+        </div>
+      </div>
+
+      <div style={card}>
+        {sHead("🔶","Phase Exit Gates")}
+        <div style={body}>
+          Yellow diamond markers (G0–G6) are automatically positioned at each phase boundary. G6 = SOP.
+          <div style={{display:"flex",flexDirection:"column",gap:0,margin:"10px 0 4px"}}>
+            {trow("Hover","Shows the gate name, description, and date.")}
+            {trow("Right-click","Mark complete / Mark incomplete.")}
+            {trow("Double-click the row","Add a custom gate marker. You'll be prompted for an ID (e.g. G1.5, Go/No-Go).")}
+            {trow("Drag custom gate","Reposition horizontally within its phase.")}
+            {trow("Right-click custom gate","Rename or delete.")}
+          </div>
+          {tip("Completed gates show a small green checkmark badge. Completion state is saved with the scenario.")}
+        </div>
+      </div>
+
+      <div style={card}>
+        {sHead("🔷","Tech Reviews")}
+        <div style={body}>
+          Blue diamond markers for program technical reviews. Defaults are <span style={hi}>SCR, SRR, SAR, PDR, CDR, SAcR</span>.
+          <div style={{display:"flex",flexDirection:"column",gap:0,margin:"10px 0 4px"}}>
+            {trow("Drag","Move horizontally within the phase.")}
+            {trow("Right-click","Mark complete / Delete (for default reviews).")}
+            {trow("Double-click the row","Add a custom tech review.")}
+            {trow("Drag custom review","Reposition within its phase.")}
+            {trow("Right-click custom review","Rename or delete.")}
+            {trow("Legend swatches","Click individual review swatches in the legend to show/hide them.")}
+          </div>
+        </div>
+      </div>
+
+      <div style={card}>
+        {sHead("🔧","Robot Builds")}
+        <div style={body}>
+          Horizontal bars representing physical robot builds (D-Build, A-Build, B-Build, C-Build by default).
+          <div style={{display:"flex",flexDirection:"column",gap:0,margin:"10px 0 4px"}}>
+            {trow("Drag bar body","Move the entire bar left or right.")}
+            {trow("Drag left/right edge","Resize the start or end date independently.")}
+            {trow("Right-click → Split","Divide into two sequential builds — useful for multi-unit programs.")}
+            {trow("Right-click → Rename","Give the build a custom label.")}
+            {trow("Right-click → Delete","Remove the bar.")}
+            {trow("Right-click → Mark complete","Add a green completion badge.")}
+            {trow("Double-click empty area","Add a new build bar to the row.")}
+          </div>
+          {tip("If bars overlap, the row height expands and they stack vertically so nothing is hidden.")}
+        </div>
+      </div>
+
+      <div style={card}>
+        {sHead("🧪","Testing")}
+        <div style={body}>
+          Testing bars (EVT, DVT by default) work identically to build bars — drag to move or resize, right-click for rename/split/delete/complete, double-click empty space to add a new bar.
+          {tip("Testing bars use a distinct indigo color to visually separate them from robot builds.")}
+        </div>
+      </div>
+
+      <div style={card}>
+        {sHead("🏊","Custom Swimlanes")}
+        <div style={body}>
+          Add as many extra rows as you need for any work stream — firmware, integration, tooling, supply chain, etc.
+          <div style={{margin:"12px 0 6px"}}>
+            {step(1,<span>Click <span style={hi}>+ Add Swimlane</span> at the bottom of the timeline. Type a name and press Enter.</span>)}
+            {step(2,<span><span style={hi}>Double-click anywhere</span> inside the new lane to add a bar. Type an ID and press Enter.</span>)}
+            {step(3,<span>Drag the bar body or edges to adjust its position and duration — same as build bars.</span>)}
+            {step(4,<span>Right-click a bar to rename or delete it.</span>)}
+            {step(5,<span>Click the <span style={hi}>⋮</span> button next to the lane label to rename or delete the entire lane.</span>)}
+          </div>
+          Each lane gets a unique color from a rotating palette. Lane names and all bar positions are saved with the scenario.
+        </div>
+      </div>
+
+      <div style={card}>
+        {sHead("💾","Saving & Loading Scenarios")}
+        <div style={body}>
+          <div style={{marginBottom:14}}>
+            <div style={{...hi,marginBottom:5,fontSize:13}}>Saving</div>
+            Type a name in the <span style={hi}>Scenario Name</span> field in the Scheduling panel and click <span style={hi}>Save</span>. Scenarios are stored in your account. Use <span style={hi}>Overwrite</span> to update a scenario you've already loaded.
+          </div>
+          <div style={{marginBottom:14}}>
+            <div style={{...hi,marginBottom:5,fontSize:13}}>Loading</div>
+            Click the Home button (or navigate back to the home screen) and find your scenario in the <span style={hi}>Saved Scenarios</span> list. Click <span style={hi}>Restore</span> to load it. The full timeline state is restored — phases, bars, milestones, and settings.
+          </div>
+          <div style={{marginBottom:14}}>
+            <div style={{...hi,marginBottom:5,fontSize:13}}>Publishing</div>
+            Click <span style={hi}>Publish</span> on any saved scenario to share it with other users. Published scenarios appear in the <span style={hi}>Published Scenarios</span> table for everyone signed in.
+          </div>
+          <div>
+            <div style={{...hi,marginBottom:5,fontSize:13}}>Comparing scenarios</div>
+            Check the checkbox next to up to <span style={hi}>5 scenarios</span> in the saved list. A Compare bar appears — click <span style={hi}>Compare</span> to open the side-by-side view. Use the alignment toggle to compare by calendar date or by relative phase start.
+          </div>
+        </div>
+      </div>
+
+      <div style={card}>
+        {sHead("📤","Exporting")}
+        <div style={body}>
+          <div style={{display:"flex",flexDirection:mob?"column":"row",gap:12,marginBottom:4}}>
+            <div style={{flex:1,padding:"10px 12px",background:isDark?"rgba(20,100,50,0.12)":"#f0f7f2",border:"1px solid "+(isDark?"#1a4a2a":"#a8d5b8"),borderRadius:6}}>
+              <div style={{fontWeight:700,color:isDark?"#4caf80":"#1a7a40",marginBottom:6,fontSize:13}}>⬇ CSV</div>
+              <div style={{fontSize:12,lineHeight:1.65}}>Downloads a Smartsheet-compatible CSV. Every milestone and phase date appears as a row. The full tool state is embedded in the header — importing it back restores the exact scenario, including custom lanes, bars, and settings.</div>
+            </div>
+            <div style={{flex:1,padding:"10px 12px",background:isDark?"rgba(20,100,50,0.12)":"#f0f7f2",border:"1px solid "+(isDark?"#1a4a2a":"#a8d5b8"),borderRadius:6}}>
+              <div style={{fontWeight:700,color:isDark?"#4caf80":"#1a7a40",marginBottom:6,fontSize:13}}>📷 PNG</div>
+              <div style={{fontSize:12,lineHeight:1.65}}>Captures the visible timeline as a clean PNG image — ideal for presentations, design reviews, or email. Renders all phase bars, swimlane rows, and markers exactly as shown on screen.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div style={card}>
+        {sHead("⌨️","Keyboard Shortcuts")}
+        <div style={body}>
+          <div style={{display:"flex",flexDirection:"column",gap:10}}>
+            {[
+              {keys:["Ctrl","Z"],desc:"Undo the last change"},
+              {keys:["Ctrl","Shift","Z"],desc:"Redo"},
+              {keys:["Ctrl","Y"],desc:"Redo (alternate)"},
+            ].map((row,i)=>(
+              <div key={i} style={{display:"flex",alignItems:"center",gap:12}}>
+                <div style={{display:"flex",alignItems:"center",gap:4,minWidth:mob?140:170,flexShrink:0}}>
+                  {row.keys.map((k,j)=><React.Fragment key={k}>{j>0&&<span style={{color:t.textDim,fontSize:11,padding:"0 1px"}}>+</span>}{kbd(k)}</React.Fragment>)}
+                </div>
+                <div style={{fontSize:13}}>{row.desc}</div>
+              </div>
+            ))}
+          </div>
+          {tip("On Mac, use ⌘ Cmd instead of Ctrl for all shortcuts.")}
+        </div>
+      </div>
+
+      <div style={card}>
+        {sHead("💡","Tips & Tricks")}
+        <div style={body}>
+          <div style={{display:"flex",flexDirection:"column",gap:2}}>
+            {[
+              "Overlapping milestones or bars stack vertically — the row height expands automatically so nothing is hidden.",
+              "Phase proportions are stored as fractions, not absolute days, so they scale cleanly when you change the total duration.",
+              "Undo history (up to 30 steps) is preserved during a session but is not saved with the scenario.",
+              "In Fix Both mode, dragging a phase divider compresses adjacent phases while keeping the total duration locked.",
+              "The CSV header embeds the full tool state — importing even a hand-edited CSV restores everything correctly.",
+              "Right-click any element for an instant context menu — no modifier keys or long-press needed.",
+              "The Reset button in the toolbar returns the current timeline to its default state without affecting saved scenarios.",
+            ].map((text,i)=>(
+              <div key={i} style={{display:"flex",gap:10,padding:"6px 0",borderBottom:"1px solid "+t.gridLine}}>
+                <span style={{color:"#f5c800",flexShrink:0,marginTop:2,fontSize:10}}>◆</span>
+                <span style={{fontSize:13}}>{text}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Main App ──────────────────────────────────────────────────────────────────
 function App(){
   const mob=useIsMobile();
@@ -1498,7 +1893,8 @@ function App(){
     testBars:initTestBars,
     anchor:defaultStartDate,durDays:defaultDurDays,
     launchWeeks:DEFAULT_LAUNCH_WK,sustainWeeks:DEFAULT_SUSTAIN_WK,
-    completed:{},customTrs:[],customGates:[],
+    completed:{},customTrs:[],customGates:[],customLanes:[],
+    buildMilestones:[],testMilestones:[],gateBars:[],reviewBars:[],
   }),[]);
 
   const{current:snap,push:pushSnap,undo,redo,canUndo,canRedo}=useUndoable(initSnap);
@@ -1517,16 +1913,7 @@ function App(){
   const[loadedScenarioKey,setLoadedScenarioKey]=useState(null);
   const[session,setSession]=useState(null);
   const currentUser=useMemo(()=>session?.user?.email||"",[session]);
-  const displayName=useMemo(()=>session?.user?.user_metadata?.display_name||session?.user?.email?.split("@")[0]||"",[session]);
   const[authLoading,setAuthLoading]=useState(true);
-  const[userMenuOpen,setUserMenuOpen]=useState(false);
-  const[confirmSignOut,setConfirmSignOut]=useState(false);
-  const[renamingUser,setRenamingUser]=useState(false);
-  const[newDisplayName,setNewDisplayName]=useState("");
-  const[userMenuError,setUserMenuError]=useState("");
-  const[userMenuSaving,setUserMenuSaving]=useState(false);
-  const[userMenuPos,setUserMenuPos]=useState({top:0,right:0});
-  const triggerRef=useRef(null);
   const[sharedScenarios,setSharedScenarios]=useState([]);
   const[sharedLoading,setSharedLoading]=useState(true);
   const[shareError,setShareError]=useState("");
@@ -1568,6 +1955,7 @@ function App(){
   const[importError,setImportError]=useState("");
   const[importSuccess,setImportSuccess]=useState("");
   const[showBug,setShowBug]=useState(false);
+  const[showHelp,setShowHelp]=useState(false);
   const[aboutOpen,setAboutOpen]=useState(()=>{const s=localStorage.getItem("tlAboutSeen");if(!s){localStorage.setItem("tlAboutSeen","1");return true;}return false;});
   const[todayDate,setTodayDate]=useState(today0);
   const[hiddenRows,setHiddenRows]=useState({gates:false,reviews:false,builds:false,testing:false});
@@ -1579,7 +1967,7 @@ function App(){
 
   // Use the live drag position for rendering, but only commit to undo history on mouseup.
   const renderSnap=drag.current&&liveSnap.current?liveSnap.current:snap;
-  const{pcts,trPos,trVisible,dbList,testBars,anchor,durDays,launchWeeks,sustainWeeks,completed,customTrs,customGates}=renderSnap;
+  const{pcts,trPos,trVisible,dbList,testBars,anchor,durDays,launchWeeks,sustainWeeks,completed,customTrs,customGates,customLanes,buildMilestones,testMilestones,gateBars,reviewBars}=renderSnap;
   function ap(p){pushSnap({...snap,...p});}
   function toggleComplete(key){const c=snap.completed||{};ap({completed:{...c,[key]:!c[key]}});}
   function toggleRow(key){setHiddenRows(h=>({...h,[key]:!h[key]}));}
@@ -1625,8 +2013,8 @@ function App(){
   const showG7=launchEndDate<=displayEndDate;
 
   const ticks=useMemo(()=>mode!=null?getTicks(startDate,displayEndDate,gran):[],[startDate?.getTime(),displayEndDate?.getTime(),gran,mode]);
-  const approxYr=durDays/365.25;
-  const actYrBtn=[1,2,3,4,5].find(y=>Math.abs(approxYr-y)<0.05)||null;
+  const approxMo=Math.round(durDays/30.44);
+  const actMoBtn=[12,18,24,30,36,48].find(m=>Math.abs(approxMo-m)<=1)||null;
   const planningEnd=dspDevFrac*(st[3]||0),developEnd=dspDevFrac;
 
   function setPhaseWeeks(idx,wks){
@@ -1670,45 +2058,42 @@ function App(){
   function deleteTestBar(key){setTestBars(prev=>prev.filter(b=>b.key!==key));}
   function renameBuildBar(key,label){const l=eggName(label);if(l!==label)triggerConfetti();pushSnap({...snap,dbList:snap.dbList.map(b=>b.key===key?{...b,label:l}:b)});}
   function renameTestBar(key,label){const l=eggName(label);if(l!==label)triggerConfetti();pushSnap({...snap,testBars:(snap.testBars||[]).map(b=>b.key===key?{...b,id:l}:b)});}
-  function addBuildBar(e){
-    const rect=timelineRef.current?.getBoundingClientRect();if(!rect)return;
-    const x=(e.clientX-rect.left)/rect.width;
-    let pi=0;for(let i=0;i<n.length;i++){const ps=st[i]*dspDevFrac,pe=(st[i]+n[i])*dspDevFrac;if(x>=ps&&x<pe){pi=i;break;}if(i===n.length-1)pi=i;}
-    const phW=n[pi]*dspDevFrac,ps2=st[pi]*dspDevFrac;
-    const frac=phW>0?clamp((x-ps2)/phW,0.05,0.95):0.5;
-    const s=Math.max(0.01,frac-0.1),ev=Math.min(0.99,frac+0.1);
-    setPendingCreate({type:"build",phase:pi,s,e:ev,clientX:e.clientX,clientY:e.clientY});
-  }
-  function addTestBar(e){
-    const rect=timelineRef.current?.getBoundingClientRect();if(!rect)return;
-    const x=(e.clientX-rect.left)/rect.width;
-    let pi=0;for(let i=0;i<n.length;i++){const ps=st[i]*dspDevFrac,pe=(st[i]+n[i])*dspDevFrac;if(x>=ps&&x<pe){pi=i;break;}if(i===n.length-1)pi=i;}
-    const phW=n[pi]*dspDevFrac,ps2=st[pi]*dspDevFrac;
-    const frac=phW>0?clamp((x-ps2)/phW,0.05,0.95):0.5;
-    const s=Math.max(0.01,frac-0.1),ev=Math.min(0.99,frac+0.1);
-    setPendingCreate({type:"test",phase:pi,s,e:ev,clientX:e.clientX,clientY:e.clientY});
-  }
-  function addCustomTr(e){
-    const rect=timelineRef.current?.getBoundingClientRect();if(!rect)return;
+  // ── helper: compute phase + both bar-extent and milestone-pos from a click ──
+  function clickToPhasePos(e){
+    const rect=timelineRef.current?.getBoundingClientRect();if(!rect)return null;
     const x=(e.clientX-rect.left)/rect.width;
     let pi=0,ppos=0.5;
     for(let i=0;i<n.length;i++){const ps=st[i]*dspDevFrac,pe=(st[i]+n[i])*dspDevFrac;if(x>=ps&&x<pe){pi=i;const phW=pe-ps;ppos=phW>0?clamp((x-ps)/phW,0.02,0.98):0.5;break;}if(i===n.length-1){pi=i;ppos=0.5;}}
-    setPendingCreate({type:"customTr",phase:pi,pos:ppos,clientX:e.clientX,clientY:e.clientY});
+    const s=Math.max(0.01,ppos-0.1),ev=Math.min(0.99,ppos+0.1);
+    return{phase:pi,pos:ppos,s,e:ev};
   }
-  function addCustomGate(e){
-    const rect=timelineRef.current?.getBoundingClientRect();if(!rect)return;
-    const x=(e.clientX-rect.left)/rect.width;
-    let pi=0,ppos=0.5;
-    for(let i=0;i<n.length;i++){const ps=st[i]*dspDevFrac,pe=(st[i]+n[i])*dspDevFrac;if(x>=ps&&x<pe){pi=i;const phW=pe-ps;ppos=phW>0?clamp((x-ps)/phW,0.02,0.98):0.5;break;}if(i===n.length-1){pi=i;ppos=0.5;}}
-    setPendingCreate({type:"customGate",phase:pi,pos:ppos,clientX:e.clientX,clientY:e.clientY});
-  }
-  function confirmCreate(name){
+  function addBuildBar(e){const p=clickToPhasePos(e);if(!p)return;setPendingCreate({type:"buildRow",...p,defaultItemType:"bar",allowBoth:true,clientX:e.clientX,clientY:e.clientY});}
+  function addTestBar(e){const p=clickToPhasePos(e);if(!p)return;setPendingCreate({type:"testRow",...p,defaultItemType:"bar",allowBoth:true,clientX:e.clientX,clientY:e.clientY});}
+  function addCustomTr(e){const p=clickToPhasePos(e);if(!p)return;setPendingCreate({type:"reviewRow",...p,defaultItemType:"milestone",allowBoth:true,clientX:e.clientX,clientY:e.clientY});}
+  function addCustomGate(e){const p=clickToPhasePos(e);if(!p)return;setPendingCreate({type:"gateRow",...p,defaultItemType:"milestone",allowBoth:true,clientX:e.clientX,clientY:e.clientY});}
+  function confirmCreate(name,itemType){
     if(!pendingCreate)return;
-    const{type,phase,pos,s:pS,e:pE}=pendingCreate;
-    if(type==="build"){const nk=snap.dbList.reduce((m,b)=>Math.max(m,b.key),-1)+1;const bn=eggName(name);if(bn!==name)triggerConfetti();pushSnap({...snap,dbList:[...snap.dbList,{key:nk,family:"U",seq:nk+1,phase,s:pS,e:pE,label:bn}]});}
-    else if(type==="test"){const et=snap.testBars||[];const nk=et.reduce((m,b)=>typeof b.key==="number"?Math.max(m,b.key):m,-1)+1;const bn=eggName(name);if(bn!==name)triggerConfetti();pushSnap({...snap,testBars:[...et,{key:nk,id:bn,phase,s:pS,e:pE}]});}
-    else if(type==="customTr"){const cTrs=snap.customTrs||[];const nk=cTrs.reduce((m,b)=>Math.max(m,b.key),-1)+1;pushSnap({...snap,customTrs:[...cTrs,{key:nk,phase,pos,id:name}]});}
-    else if(type==="customGate"){const cGates=snap.customGates||[];const nk=cGates.reduce((m,b)=>Math.max(m,b.key),-1)+1;pushSnap({...snap,customGates:[...cGates,{key:nk,phase,pos,id:name}]});}
+    const{type,phase,pos,s:pS,e:pE,laneKey}=pendingCreate;
+    const isMil=itemType==="milestone";
+    if(type==="buildRow"||type==="build"){
+      if(isMil){const bm=snap.buildMilestones||[];const nk=bm.reduce((m,b)=>Math.max(m,b.key),-1)+1;pushSnap({...snap,buildMilestones:[...bm,{key:nk,id:name,phase,pos}]});}
+      else{const nk=snap.dbList.reduce((m,b)=>Math.max(m,b.key),-1)+1;const bn=eggName(name);if(bn!==name)triggerConfetti();pushSnap({...snap,dbList:[...snap.dbList,{key:nk,family:"U",seq:nk+1,phase,s:pS,e:pE,label:bn}]});}
+    }else if(type==="testRow"||type==="test"){
+      if(isMil){const tm=snap.testMilestones||[];const nk=tm.reduce((m,b)=>Math.max(m,b.key),-1)+1;pushSnap({...snap,testMilestones:[...tm,{key:nk,id:name,phase,pos}]});}
+      else{const et=snap.testBars||[];const nk=et.reduce((m,b)=>typeof b.key==="number"?Math.max(m,b.key):m,-1)+1;const bn=eggName(name);if(bn!==name)triggerConfetti();pushSnap({...snap,testBars:[...et,{key:nk,id:bn,phase,s:pS,e:pE}]});}
+    }else if(type==="gateRow"||type==="customGate"){
+      if(!isMil){const gb=snap.gateBars||[];const nk=gb.reduce((m,b)=>Math.max(m,b.key),-1)+1;pushSnap({...snap,gateBars:[...gb,{key:nk,id:name,phase,s:pS,e:pE}]});}
+      else{const cGates=snap.customGates||[];const nk=cGates.reduce((m,b)=>Math.max(m,b.key),-1)+1;pushSnap({...snap,customGates:[...cGates,{key:nk,phase,pos,id:name}]});}
+    }else if(type==="reviewRow"||type==="customTr"){
+      if(!isMil){const rb=snap.reviewBars||[];const nk=rb.reduce((m,b)=>Math.max(m,b.key),-1)+1;pushSnap({...snap,reviewBars:[...rb,{key:nk,id:name,phase,s:pS,e:pE}]});}
+      else{const cTrs=snap.customTrs||[];const nk=cTrs.reduce((m,b)=>Math.max(m,b.key),-1)+1;pushSnap({...snap,customTrs:[...cTrs,{key:nk,phase,pos,id:name}]});}
+    }else if(type==="customLane"){
+      const lanes=snap.customLanes||[];const nk=lanes.reduce((m,l)=>Math.max(m,l.key),-1)+1;const color=CUSTOM_LANE_COLORS[nk%CUSTOM_LANE_COLORS.length];pushSnap({...snap,customLanes:[...lanes,{key:nk,name,color,bars:[],milestones:[]}]});
+    }else if(type==="customLaneBar"){
+      const lanes=snap.customLanes||[];
+      if(isMil){pushSnap({...snap,customLanes:lanes.map(l=>{if(l.key!==laneKey)return l;const nk=(l.milestones||[]).reduce((m,b)=>Math.max(m,b.key),-1)+1;return{...l,milestones:[...(l.milestones||[]),{key:nk,id:name,phase,pos}]};})});}
+      else{const bn=eggName(name);if(bn!==name)triggerConfetti();pushSnap({...snap,customLanes:lanes.map(l=>{if(l.key!==laneKey)return l;const nk=(l.bars||[]).reduce((m,b)=>Math.max(m,b.key),-1)+1;return{...l,bars:[...(l.bars||[]),{key:nk,id:bn,phase,s:pS,e:pE}]};})});}
+    }
     setPendingCreate(null);
   }
   function cancelCreate(){setPendingCreate(null);}
@@ -1716,6 +2101,21 @@ function App(){
   function renameCustomTr(key,id){pushSnap({...snap,customTrs:(snap.customTrs||[]).map(b=>b.key===key?{...b,id}:b)});}
   function deleteCustomGate(key){pushSnap({...snap,customGates:(snap.customGates||[]).filter(b=>b.key!==key)});}
   function renameCustomGate(key,id){pushSnap({...snap,customGates:(snap.customGates||[]).map(b=>b.key===key?{...b,id}:b)});}
+  function deleteCustomLane(laneKey){pushSnap({...snap,customLanes:(snap.customLanes||[]).filter(l=>l.key!==laneKey)});}
+  function renameCustomLane(laneKey,name){pushSnap({...snap,customLanes:(snap.customLanes||[]).map(l=>l.key===laneKey?{...l,name}:l)});}
+  function addCustomLaneBarFromClick(laneKey,e){const p=clickToPhasePos(e);if(!p)return;setPendingCreate({type:"customLaneBar",laneKey,...p,defaultItemType:"bar",allowBoth:true,clientX:e.clientX,clientY:e.clientY});}
+  function deleteCustomLaneBar(laneKey,barKey){pushSnap({...snap,customLanes:(snap.customLanes||[]).map(l=>l.key!==laneKey?l:{...l,bars:(l.bars||[]).filter(b=>b.key!==barKey)})});}
+  function renameCustomLaneBar(laneKey,barKey,id){pushSnap({...snap,customLanes:(snap.customLanes||[]).map(l=>l.key!==laneKey?l:{...l,bars:(l.bars||[]).map(b=>b.key===barKey?{...b,id}:b)})});}
+  function deleteCustomLaneMilestone(laneKey,mKey){pushSnap({...snap,customLanes:(snap.customLanes||[]).map(l=>l.key!==laneKey?l:{...l,milestones:(l.milestones||[]).filter(m=>m.key!==mKey)})});}
+  function renameCustomLaneMilestone(laneKey,mKey,id){pushSnap({...snap,customLanes:(snap.customLanes||[]).map(l=>l.key!==laneKey?l:{...l,milestones:(l.milestones||[]).map(m=>m.key===mKey?{...m,id}:m)})});}
+  function deleteBuildMilestone(key){ap({buildMilestones:(snap.buildMilestones||[]).filter(m=>m.key!==key)});}
+  function renameBuildMilestone(key,id){ap({buildMilestones:(snap.buildMilestones||[]).map(m=>m.key===key?{...m,id}:m)});}
+  function deleteTestMilestone(key){ap({testMilestones:(snap.testMilestones||[]).filter(m=>m.key!==key)});}
+  function renameTestMilestone(key,id){ap({testMilestones:(snap.testMilestones||[]).map(m=>m.key===key?{...m,id}:m)});}
+  function deleteGateBar(key){ap({gateBars:(snap.gateBars||[]).filter(b=>b.key!==key)});}
+  function renameGateBar(key,id){ap({gateBars:(snap.gateBars||[]).map(b=>b.key===key?{...b,id}:b)});}
+  function deleteReviewBar(key){ap({reviewBars:(snap.reviewBars||[]).filter(b=>b.key!==key)});}
+  function renameReviewBar(key,id){ap({reviewBars:(snap.reviewBars||[]).map(b=>b.key===key?{...b,id}:b)});}
   function doReset(){pushSnap({...initSnap});setConfirmReset(false);setPendingCreate(null);}
 
   // Supabase scenario storage
@@ -1758,13 +2158,15 @@ function App(){
       durDays:sc.durDays||defaultDurDays,
       launchWeeks:sc.launchWeeks||DEFAULT_LAUNCH_WK,
       sustainWeeks:sc.sustainWeeks||DEFAULT_SUSTAIN_WK,
-      completed:sc.completed||{},customTrs:sc.customTrs||[],customGates:sc.customGates||[],
+      completed:sc.completed||{},customTrs:sc.customTrs||[],customGates:sc.customGates||[],customLanes:(sc.customLanes||[]).map(l=>({...l,milestones:Array.isArray(l.milestones)?l.milestones:[]})),
+      buildMilestones:sc.buildMilestones||[],testMilestones:sc.testMilestones||[],gateBars:sc.gateBars||[],reviewBars:sc.reviewBars||[],
     });
     setMode(sc.mode||"forward");
     setGran(sc.gran||"quarterly");
     setCompareView(false);
     const isSaved=sc.source!=="published";
     setLoadedScenarioKey(isSaved?sc.key:null);
+    // REMOVED: auto-select on load (was adding to compareIds)
   }
   async function deleteScenario(key){
     const{error}=await sbClient.from('scenarios').delete().eq('id',key);
@@ -1800,17 +2202,6 @@ function App(){
     finally{setSharedLoading(false);}
   }
   useEffect(()=>{loadSharedScenarios();},[]);
-  async function handleRenameUser(){
-    const trimmed=newDisplayName.trim();
-    if(!trimmed){setUserMenuError("Display name cannot be empty.");return;}
-    setUserMenuSaving(true);setUserMenuError("");
-    const{data,error}=await sbClient.auth.updateUser({data:{display_name:trimmed}});
-    setUserMenuSaving(false);
-    if(error){setUserMenuError(error.message||"Could not update display name. Try again.");return;}
-    // Use the user returned directly from updateUser — most up-to-date
-    if(data?.user)setSession(prev=>prev?{...prev,user:data.user}:prev);
-    setRenamingUser(false);setUserMenuOpen(false);setNewDisplayName("");setUserMenuError("");
-  }
   async function publishScenario(sc){
     if(!currentUser){setShareError("Set a display name first (click ✏️ in the Saved & Published section).");return;}
     setShareError("");
@@ -1901,7 +2292,8 @@ function App(){
         const saved=sbRow(data);
         setScenarios(prev=>[saved,...prev]);
         setLoadedScenarioKey(saved.key);
-        setImportSuccess(`Imported & saved as "${name}"`);setTimeout(()=>setImportSuccess(""),4000);
+        const note=result.summary?` ${result.summary}`:"";
+        setImportSuccess(`Imported & saved as "${name}".${note}`);setTimeout(()=>setImportSuccess(""),6000);
       }catch(err){setImportError("Import failed: "+err.message);}
     };
     reader.onerror=()=>{setImportError("Could not read file.");};
@@ -1909,7 +2301,7 @@ function App(){
   }
 
   function handleExportCSV(){
-    exportCSVFull(snap,mode,gran,startDate,sopDate,launchEndDate,sustainEndDate,devDays,n,devPhaseStart,devPhaseEnd,devPhaseDate,dbList,trVisible,trPos,launchWeeks,sustainWeeks,testBars||[]);
+    exportCSVFull(snap,mode,gran,startDate,sopDate,launchEndDate,sustainEndDate,devDays,n,devPhaseStart,devPhaseEnd,devPhaseDate,dbList,trVisible,trPos,launchWeeks,sustainWeeks,testBars||[],customLanes||[]);
   }
 
   async function handleExportPNG(){
@@ -1940,6 +2332,18 @@ function App(){
       else if(d.type==="test-left"){const phW=dspDevFrac*bn[d.phase];next={...base,testBars:base.testBars.map(b=>b.key===d.bKey?{...b,s:clamp(d.s0+dx/phW,0.01,d.e0-0.05)}:b)};}
       else if(d.type==="test-right"){const phW=dspDevFrac*bn[d.phase];next={...base,testBars:base.testBars.map(b=>b.key===d.bKey?{...b,e:clamp(d.e0+dx/phW,d.s0+0.05,4.0)}:b)};}
       else if(d.type==="test-body"){const phW=dspDevFrac*bn[d.phase];const span=d.e0-d.s0,newS=clamp(d.s0+dx/phW,0.01,4.0-span);next={...base,testBars:base.testBars.map(b=>b.key===d.bKey?{...b,s:newS,e:newS+span}:b)};}
+      else if(d.type==="clane-left"){const phW=dspDevFrac*bn[d.phase];next={...base,customLanes:(base.customLanes||[]).map(l=>l.key!==d.laneKey?l:{...l,bars:(l.bars||[]).map(b=>b.key===d.bKey?{...b,s:clamp(d.s0+dx/phW,0.01,d.e0-0.05)}:b)})};}
+      else if(d.type==="clane-right"){const phW=dspDevFrac*bn[d.phase];next={...base,customLanes:(base.customLanes||[]).map(l=>l.key!==d.laneKey?l:{...l,bars:(l.bars||[]).map(b=>b.key===d.bKey?{...b,e:clamp(d.e0+dx/phW,d.s0+0.05,4.0)}:b)})};}
+      else if(d.type==="clane-body"){const phW=dspDevFrac*bn[d.phase];const span=d.e0-d.s0,newS=clamp(d.s0+dx/phW,0.01,4.0-span);next={...base,customLanes:(base.customLanes||[]).map(l=>l.key!==d.laneKey?l:{...l,bars:(l.bars||[]).map(b=>b.key===d.bKey?{...b,s:newS,e:newS+span}:b)})};}
+      else if(d.type==="bMil"){const phW=dspDevFrac*bn[d.phase];next={...base,buildMilestones:(base.buildMilestones||[]).map(m=>m.key===d.mKey?{...m,pos:clamp(d.pos0+dx/phW,0.02,0.98)}:m)};}
+      else if(d.type==="tMil"){const phW=dspDevFrac*bn[d.phase];next={...base,testMilestones:(base.testMilestones||[]).map(m=>m.key===d.mKey?{...m,pos:clamp(d.pos0+dx/phW,0.02,0.98)}:m)};}
+      else if(d.type==="clMil"){const phW=dspDevFrac*bn[d.phase];next={...base,customLanes:(base.customLanes||[]).map(l=>l.key!==d.laneKey?l:{...l,milestones:(l.milestones||[]).map(m=>m.key===d.mKey?{...m,pos:clamp(d.pos0+dx/phW,0.02,0.98)}:m)})};}
+      else if(d.type==="gBar-left"){const phW=dspDevFrac*bn[d.phase];next={...base,gateBars:(base.gateBars||[]).map(b=>b.key===d.bKey?{...b,s:clamp(d.s0+dx/phW,0.01,d.e0-0.05)}:b)};}
+      else if(d.type==="gBar-right"){const phW=dspDevFrac*bn[d.phase];next={...base,gateBars:(base.gateBars||[]).map(b=>b.key===d.bKey?{...b,e:clamp(d.e0+dx/phW,d.s0+0.05,0.99)}:b)};}
+      else if(d.type==="gBar-body"){const phW=dspDevFrac*bn[d.phase];const span=d.e0-d.s0,newS=clamp(d.s0+dx/phW,0.01,0.99-span);next={...base,gateBars:(base.gateBars||[]).map(b=>b.key===d.bKey?{...b,s:newS,e:newS+span}:b)};}
+      else if(d.type==="rBar-left"){const phW=dspDevFrac*bn[d.phase];next={...base,reviewBars:(base.reviewBars||[]).map(b=>b.key===d.bKey?{...b,s:clamp(d.s0+dx/phW,0.01,d.e0-0.05)}:b)};}
+      else if(d.type==="rBar-right"){const phW=dspDevFrac*bn[d.phase];next={...base,reviewBars:(base.reviewBars||[]).map(b=>b.key===d.bKey?{...b,e:clamp(d.e0+dx/phW,d.s0+0.05,0.99)}:b)};}
+      else if(d.type==="rBar-body"){const phW=dspDevFrac*bn[d.phase];const span=d.e0-d.s0,newS=clamp(d.s0+dx/phW,0.01,0.99-span);next={...base,reviewBars:(base.reviewBars||[]).map(b=>b.key===d.bKey?{...b,s:newS,e:newS+span}:b)};};
       if(next){liveSnap.current=next;}
       forceUpdate(x=>x+1);
     }
@@ -1954,6 +2358,12 @@ function App(){
   function startTestDrag(e,bKey,side,b){e.preventDefault();dragSnap.current=snap;drag.current={type:"test-"+side,bKey,phase:b.phase,x0:e.clientX,s0:b.s,e0:b.e};}
   function startCustomTrDrag(e,b){e.preventDefault();dragSnap.current=snap;drag.current={type:"customTr",trKey:b.key,phase:b.phase,x0:e.clientX,pos0:b.pos};}
   function startCustomGateDrag(e,b){e.preventDefault();dragSnap.current=snap;drag.current={type:"customGate",gateKey:b.key,phase:b.phase,x0:e.clientX,pos0:b.pos};}
+  function startCustomLaneDrag(e,laneKey,bKey,side,b){e.preventDefault();dragSnap.current=snap;drag.current={type:"clane-"+side,laneKey,bKey,phase:b.phase,x0:e.clientX,s0:b.s,e0:b.e};}
+  function startBuildMilestoneDrag(e,mKey,m){e.preventDefault();dragSnap.current=snap;drag.current={type:"bMil",mKey,phase:m.phase,x0:e.clientX,pos0:m.pos};}
+  function startTestMilestoneDrag(e,mKey,m){e.preventDefault();dragSnap.current=snap;drag.current={type:"tMil",mKey,phase:m.phase,x0:e.clientX,pos0:m.pos};}
+  function startCustomLaneMilestoneDrag(e,laneKey,mKey,m){e.preventDefault();dragSnap.current=snap;drag.current={type:"clMil",laneKey,mKey,phase:m.phase,x0:e.clientX,pos0:m.pos};}
+  function startGateBarDrag(e,bKey,side,b){e.preventDefault();dragSnap.current=snap;drag.current={type:"gBar-"+side,bKey,phase:b.phase,x0:e.clientX,s0:b.s,e0:b.e};}
+  function startReviewBarDrag(e,bKey,side,b){e.preventDefault();dragSnap.current=snap;drag.current={type:"rBar-"+side,bKey,phase:b.phase,x0:e.clientX,s0:b.s,e0:b.e};}
 
   useEffect(()=>{
     function onKey(e){if((e.metaKey||e.ctrlKey)&&e.key==="z"){e.preventDefault();if(e.shiftKey)redo();else undo();}if((e.metaKey||e.ctrlKey)&&e.key==="y"){e.preventDefault();redo();}}
@@ -1972,11 +2382,11 @@ function App(){
   function handleStartDate(v){const nd=frInp(v);if(mode==="both"){ap({anchor:nd,durDays:Math.max(7,dBetw(nd,sopDate))});}else if(mode==="forward")setAnchor(nd);else{const dur=dBetw(nd,anchor);if(dur>=7)setDurDays(dur);}}
   function handleSopDate(v){const nd=frInp(v);if(mode==="backward")setAnchor(nd);else{const dur=dBetw(anchor,nd);if(dur>=7)setDurDays(dur);}}
 
-  function btn(act,sm){return{padding:sm?"4px 12px":"5px 14px",borderRadius:4,border:"none",cursor:"pointer",fontWeight:700,fontSize:sm?13:14,background:act?t.btnAct:t.btnBg,color:act?"#fff":t.btnText,transition:"background 0.15s"};}
+  function btn(act,sm){return{padding:sm?"5px 12px":"5px 14px",borderRadius:4,border:"none",cursor:"pointer",fontWeight:700,fontSize:sm?13:14,background:act?t.btnAct:t.btnBg,color:act?"#fff":t.btnText,transition:"background 0.15s"};}
   function inpS(dashed){return{background:t.inBg,border:"1px "+(dashed?"dashed":"solid")+" "+t.inBorder,color:dashed?(isDark?"#7098ba":"#4a70a0"):t.inText,padding:"5px 9px",borderRadius:4,fontSize:13,outline:"none",colorScheme:isDark?"dark":"light",textAlign:"left"};}
   const rowLbl={fontSize:11,color:t.rowLbl,textTransform:"uppercase",letterSpacing:"0.7px",paddingLeft:2,display:"block",marginBottom:2};
   const box={background:t.panel,borderRadius:7,border:"1px solid "+t.border,marginBottom:12};
-  function urBtn(en){return{padding:"4px 9px",borderRadius:4,border:"1px solid "+t.border,cursor:en?"pointer":"not-allowed",fontWeight:600,fontSize:13,background:en?t.undoBg:t.btnBg,color:en?t.text:t.textDim,display:"flex",alignItems:"center",gap:5,opacity:en?1:0.45,transition:"all 0.15s"};}
+  function urBtn(en){return{padding:"5px 9px",borderRadius:4,border:"1px solid "+t.border,cursor:en?"pointer":"not-allowed",fontWeight:600,fontSize:13,background:en?t.undoBg:t.btnBg,color:en?t.text:t.textDim,display:"flex",alignItems:"center",gap:5,opacity:en?1:0.45,transition:"all 0.15s"};}
   const prodDispItems=[{ph:PROD_PHASES[0],w:dspLaunchFrac,wks:launchWeeks},{ph:PROD_PHASES[1],w:dspSustainFrac,wks:sustainWeeks}].filter(i=>i.w>0.001);
   const COL_SWATCH=14,COL_PHASE=120,COL_DATES=286,COL_WK=108,COL_SEP=20,COL_PCT=96;
   const thStyle={fontSize:11,color:t.rowLbl,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.6px",padding:"0 0 6px 0",borderBottom:"2px solid "+t.border,whiteSpace:"nowrap",textAlign:"left"};
@@ -1986,7 +2396,7 @@ function App(){
       <div style={{display:"flex",alignItems:"center",gap:10}}>
         {mode!=null&&!compareView&&<button onClick={()=>{setMode(null);setPendingCreate(null);setLoadedScenarioKey(null);clearCompareIds();}} title="Home" style={{padding:"6px 8px",borderRadius:6,border:"1px solid "+t.border,cursor:"pointer",background:t.btnBg,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}><HouseIcon sz={17} c={t.btnText}/></button>}
         <div>
-          <div style={{fontSize:mob?15:18,fontWeight:800,letterSpacing:0.3}}>Project Timeline Tool</div>
+          <div style={{fontSize:mob?15:18,fontWeight:800,letterSpacing:0.3}}>TimelineIQ</div>
           {!mob&&<div style={{fontSize:13,color:t.textMuted,marginTop:3,display:"flex",alignItems:"center",gap:5}}>Created by Oliver Lewis + <svg width={14} height={14} viewBox="0 0 248 248" fill="none" style={{display:"inline-block",flexShrink:0}}><path d="M52.4285 162.873L98.7844 136.879L99.5485 134.602L98.7844 133.334H96.4921L88.7237 132.862L62.2346 132.153L39.3113 131.207L17.0249 130.026L11.4214 128.844L6.2 121.873L6.7094 118.447L11.4214 115.257L18.171 115.847L33.0711 116.911L55.485 118.447L71.6586 119.392L95.728 121.873H99.5485L100.058 120.337L98.7844 119.392L97.7656 118.447L74.5877 102.732L49.4995 86.1905L36.3823 76.62L29.3779 71.7757L25.8121 67.2858L24.2839 57.3608L30.6515 50.2716L39.3113 50.8623L41.4763 51.4531L50.2636 58.1879L68.9842 72.7209L93.4357 90.6804L97.0015 93.6343L98.4374 92.6652L98.6571 91.9801L97.0015 89.2625L83.757 65.2772L69.621 40.8192L63.2534 30.6579L61.5978 24.632C60.9565 22.1032 60.579 20.0111 60.579 17.4246L67.8381 7.49965L71.9133 6.19995L81.7193 7.49965L85.7946 11.0443L91.9074 24.9865L101.714 46.8451L116.996 76.62L121.453 85.4816L123.873 93.6343L124.764 96.1155H126.292V94.6976L127.566 77.9197L129.858 57.3608L132.15 30.8942L132.915 23.4505L136.608 14.4708L143.994 9.62643L149.725 12.344L154.437 19.0788L153.8 23.4505L150.998 41.6463L145.522 70.1215L141.957 89.2625H143.994L146.414 86.7813L156.093 74.0206L172.266 53.698L179.398 45.6635L187.803 36.802L193.152 32.5484H203.34L210.726 43.6549L207.415 55.1159L196.972 68.3492L188.312 79.5739L175.896 96.2095L168.191 109.585L168.882 110.689L170.738 110.53L198.755 104.504L213.91 101.787L231.994 98.7149L240.144 102.496L241.036 106.395L237.852 114.311L218.495 119.037L195.826 123.645L162.07 131.592L161.696 131.893L162.137 132.547L177.36 133.925L183.855 134.279H199.774L229.447 136.524L237.215 141.605L241.8 147.867L241.036 152.711L229.065 158.737L213.019 154.956L175.45 145.977L162.587 142.787H160.805V143.85L171.502 154.366L191.242 172.089L215.82 195.011L217.094 200.682L213.91 205.172L210.599 204.699L188.949 188.394L180.544 181.069L161.696 165.118H160.422V166.772L164.752 173.152L187.803 207.771L188.949 218.405L187.294 221.832L181.308 223.959L174.813 222.777L161.187 203.754L147.305 182.486L136.098 163.345L134.745 164.2L128.075 235.42L125.019 239.082L117.887 241.8L111.902 237.31L108.718 229.984L111.902 215.452L115.722 196.547L118.779 181.541L121.58 162.873L123.291 156.636L123.14 156.219L121.773 156.449L107.699 175.752L86.304 204.699L69.3663 222.777L65.291 224.431L58.2867 220.768L58.9235 214.27L62.8713 208.48L86.304 178.705L100.44 160.155L109.551 149.507L109.462 147.967L108.959 147.924L46.6977 188.512L35.6182 189.93L30.7788 185.44L31.4156 178.115L33.7079 175.752L52.4285 162.873Z" fill="#D97757"/></svg></div>}
         </div>
       </div>
@@ -2006,83 +2416,19 @@ function App(){
           <button onClick={handleExportPNG} style={{...btn(false,true),display:"flex",alignItems:"center",gap:5,background:isDark?"#0e2a1a":"#e8f5ee",color:isDark?"#4caf80":"#1a7a40",border:"1px solid "+(isDark?"#1a4a2a":"#a8d5b8")}}><CameraIcon sz={13} c={isDark?"#4caf80":"#1a7a40"}/>{!mob&&" PNG"}</button>
           {!mob&&<div style={{width:1,height:22,background:t.border,margin:"0 2px"}}/>}
         </>}
+        <button onClick={()=>setShowHelp(v=>!v)} title="Help" style={{padding:"5px 10px",borderRadius:4,border:"1px solid "+(showHelp?t.btnAct:t.border),cursor:"pointer",fontWeight:800,fontSize:14,background:showHelp?t.btnAct:t.btnBg,color:showHelp?"#fff":t.btnText,lineHeight:1,transition:"background 0.15s"}}>?</button>
         <div style={{display:"flex",borderRadius:5,overflow:"hidden",border:"1px solid "+t.border}}>
           {[{v:false,icon:<SunIcon/>,lbl:"Light"},{v:true,icon:<MoonIcon/>,lbl:"Dark"}].map(item=>(
             <button key={item.lbl} onClick={()=>setDark(item.v)} style={{padding:"5px 11px",border:"none",cursor:"pointer",display:"flex",alignItems:"center",gap:5,fontSize:13,fontWeight:600,background:isDark===item.v?t.btnAct:t.btnBg,color:isDark===item.v?"#fff":t.btnText,transition:"background 0.15s"}}>{item.icon}{!mob&&item.lbl}</button>
           ))}
         </div>
-        <div style={{flexShrink:0}}>
-          <button ref={triggerRef}
-            onClick={()=>{
-              if(!userMenuOpen){
-                const r=triggerRef.current.getBoundingClientRect();
-                setUserMenuPos({top:r.bottom+4,right:window.innerWidth-r.right});
-                setConfirmSignOut(false);setRenamingUser(false);setNewDisplayName(displayName);setUserMenuError("");
-              }
-              setUserMenuOpen(o=>!o);
-            }}
-            title={"Signed in as "+currentUser}
-            style={{padding:"5px 10px",borderRadius:5,border:"1px solid "+(userMenuOpen?t.btnAct:t.border),cursor:"pointer",fontSize:12,fontWeight:600,background:userMenuOpen?(isDark?"#1a2a3a":"#eaf3ff"):t.btnBg,color:userMenuOpen?t.btnAct:t.textMuted,display:"flex",alignItems:"center",gap:5,transition:"background 0.15s,color 0.15s,border-color 0.15s"}}>
-            {!mob&&<span style={{maxWidth:120,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{displayName}</span>}
-            <span style={{fontSize:10,opacity:0.7}}>{userMenuOpen?"▲":"▼"}</span>
-          </button>
-          {userMenuOpen&&ReactDOM.createPortal(
-            <>
-              <div style={{position:"fixed",inset:0,zIndex:2099}} onClick={()=>setUserMenuOpen(false)}/>
-              <div style={{position:"fixed",top:userMenuPos.top,right:userMenuPos.right,zIndex:2100,background:t.panel,border:"1px solid "+t.border,borderRadius:8,boxShadow:"0 6px 24px rgba(0,0,0,0.18)",minWidth:200,padding:"6px 0"}}>
-                <div style={{padding:"8px 14px 6px",borderBottom:"1px solid "+t.border,marginBottom:4}}>
-                  <div style={{fontSize:11,color:t.textDim,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.5px",marginBottom:2}}>Signed in as</div>
-                  <div style={{fontSize:12,color:t.text,fontWeight:600,wordBreak:"break-all"}}>{currentUser}</div>
-                </div>
-                {renamingUser?(
-                  <div style={{padding:"8px 12px"}}>
-                    <div style={{fontSize:11,color:t.textMuted,fontWeight:600,marginBottom:6}}>Display name</div>
-                    <input autoFocus value={newDisplayName} onChange={e=>{setNewDisplayName(e.target.value);setUserMenuError("");}}
-                      onKeyDown={e=>{if(e.key==="Enter")handleRenameUser();if(e.key==="Escape"){setRenamingUser(false);setNewDisplayName("");setUserMenuError("");}}}
-                      placeholder="Enter display name"
-                      style={{width:"100%",padding:"5px 8px",borderRadius:5,border:"1px solid "+(userMenuError?t.dangerText:t.btnAct),background:t.inBg,color:t.text,fontSize:12,outline:"none",boxSizing:"border-box",marginBottom:userMenuError?4:6}}/>
-                    {userMenuError&&<div style={{fontSize:11,color:t.dangerText,marginBottom:6}}>{userMenuError}</div>}
-                    <div style={{display:"flex",gap:6}}>
-                      <button onClick={handleRenameUser} disabled={userMenuSaving}
-                        style={{flex:1,padding:"4px 0",borderRadius:5,border:"none",cursor:userMenuSaving?"default":"pointer",fontSize:12,fontWeight:700,background:userMenuSaving?t.textDim:t.btnAct,color:"#fff"}}>
-                        {userMenuSaving?"Saving…":"Save"}
-                      </button>
-                      <button onClick={()=>{setRenamingUser(false);setNewDisplayName("");setUserMenuError("");}}
-                        style={{flex:1,padding:"4px 0",borderRadius:5,border:"1px solid "+t.border,cursor:"pointer",fontSize:12,fontWeight:600,background:t.btnBg,color:t.btnText}}>Cancel</button>
-                    </div>
-                  </div>
-                ):confirmSignOut?(
-                  <div style={{padding:"8px 12px"}}>
-                    <div style={{fontSize:12,color:t.textMuted,fontWeight:600,marginBottom:8,textAlign:"center"}}>Sign out of this account?</div>
-                    <div style={{display:"flex",gap:6}}>
-                      <button onClick={()=>sbClient.auth.signOut({scope:"local"})}
-                        style={{flex:1,padding:"5px 0",borderRadius:5,border:"none",cursor:"pointer",fontSize:12,fontWeight:700,background:t.dangerText,color:"#fff"}}>Sign Out</button>
-                      <button onClick={()=>setConfirmSignOut(false)}
-                        style={{flex:1,padding:"5px 0",borderRadius:5,border:"1px solid "+t.border,cursor:"pointer",fontSize:12,fontWeight:600,background:t.btnBg,color:t.btnText}}>Cancel</button>
-                    </div>
-                  </div>
-                ):(
-                  <>
-                    <button onClick={()=>{setNewDisplayName(displayName);setRenamingUser(true);}}
-                      style={{display:"block",width:"100%",textAlign:"left",padding:"8px 14px",border:"none",cursor:"pointer",fontSize:13,fontWeight:500,background:"transparent",color:t.text,transition:"background 0.1s"}}
-                      onMouseEnter={e=>e.currentTarget.style.background=isDark?"#1e2a38":"#f0f4ff"}
-                      onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
-                      ✏️ Change display name
-                    </button>
-                    <div style={{height:1,background:t.border,margin:"4px 0"}}/>
-                    <button onClick={()=>setConfirmSignOut(true)}
-                      style={{display:"block",width:"100%",textAlign:"left",padding:"8px 14px",border:"none",cursor:"pointer",fontSize:13,fontWeight:500,background:"transparent",color:t.dangerText,transition:"background 0.1s"}}
-                      onMouseEnter={e=>e.currentTarget.style.background=isDark?"#2a1a1a":"#fff4f4"}
-                      onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
-                      ⎋ Sign out
-                    </button>
-                  </>
-                )}
-              </div>
-            </>,
-            document.body
-          )}
-        </div>
+        <button onClick={()=>sbClient.auth.signOut()} title={"Signed in as "+currentUser}
+          style={{padding:"5px 10px",borderRadius:5,border:"1px solid "+t.border,cursor:"pointer",fontSize:12,fontWeight:600,background:t.btnBg,color:t.textMuted,display:"flex",alignItems:"center",gap:5,flexShrink:0,transition:"background 0.15s"}}
+          onMouseEnter={e=>{e.currentTarget.style.background=isDark?"#2a1a1a":"#fff4f4";e.currentTarget.style.color=t.dangerText;}}
+          onMouseLeave={e=>{e.currentTarget.style.background=t.btnBg;e.currentTarget.style.color=t.textMuted;}}>
+          {!mob&&<span style={{maxWidth:120,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{currentUser.split("@")[0]}</span>}
+          <span title="Sign out">⎋</span>
+        </button>
       </div>
     </div>
   );
@@ -2105,12 +2451,16 @@ function App(){
         </div>
       </>)}
       {showBug&&<BugModal t={t} isDark={isDark} onClose={()=>setShowBug(false)}/>}
+      <div style={{marginLeft:mob?-10:-16,marginRight:mob?-10:-16,marginBottom:mob?8:12,background:"#fefce8",borderBottom:"1px solid #f5c800",display:"flex",alignItems:"stretch"}}>
+        <div style={{width:10,flexShrink:0,background:"repeating-linear-gradient(45deg,#f5c800,#f5c800 5px,#1a1a1a 5px,#1a1a1a 10px)"}}/>
+        <div style={{padding:"8px 14px",fontSize:13,color:"#1a1a1a",lineHeight:1.5}}><strong>Heads up:</strong> The timelines and scenarios in this tool contain placeholder data. Replace with your program's actual dates before use.</div>
+      </div>
       {header}
       {mob&&portrait&&<div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:8,padding:"7px 12px",marginTop:14,marginBottom:10,background:isDark?"rgba(255,255,255,0.05)":"rgba(0,0,0,0.04)",borderRadius:6,border:"1px solid "+t.border,fontSize:12,color:t.textMuted}}>
         <span style={{fontSize:16}}>📱</span> Rotate to landscape for a better experience
       </div>}
 
-      {compareView?(
+      {showHelp?<HelpPage t={t} isDark={isDark} mob={mob} onClose={()=>setShowHelp(false)}/>:compareView?(
         <CompareView selected={compareSelected} compareAlign={compareAlign} setCompareAlign={setCompareAlign}
           hiddenRows={compareHiddenRows} toggleRow={toggleCompareRow}
           todayDate={todayDate} showTodayLine={showTodayLine} toggleTodayLine={()=>setShowTodayLine(v=>!v)}
@@ -2122,7 +2472,7 @@ function App(){
           onRefresh={loadScenarios} onPublish={publishScenario} publishedKeys={myPublishedKeys}
           sharedScenarios={sharedScenarios} sharedLoading={sharedLoading}
           shareError={shareError} onUnpublish={unpublishScenario} onDuplicateShared={duplicatePublishedScenario} onRenameShared={renameSharedScenario} onRefreshShared={loadSharedScenarios}
-          currentUser={currentUser} displayName={displayName} compareIds={compareIds} onToggleCompare={toggleCompare}
+          currentUser={currentUser} compareIds={compareIds} onToggleCompare={toggleCompare}
           loadedScenarioKey={loadedScenarioKey}/>
       ):mode==null?(
         <div style={{display:"flex",flexDirection:"column",alignItems:"center",padding:mob?"12px 0":"28px 16px",gap:mob?14:20}}>
@@ -2212,7 +2562,7 @@ function App(){
               compareIds={compareIds} onToggleCompare={toggleCompare}
               loadedKey={loadedScenarioKey} t={t} isDark={isDark} showSaveForm={false}/>
             <SharedScenarioTable sharedScenarios={sharedScenarios} loading={sharedLoading} shareError={shareError}
-              currentUser={currentUser} displayName={displayName} onRestore={restoreScenario} onUnpublish={unpublishScenario} onDuplicate={duplicatePublishedScenario} onRenameShared={renameSharedScenario}
+              currentUser={currentUser} onRestore={restoreScenario} onUnpublish={unpublishScenario} onDuplicate={duplicatePublishedScenario} onRenameShared={renameSharedScenario}
               onRefresh={loadSharedScenarios} compareIds={compareIds} onToggleCompare={toggleCompare}
               t={t} isDark={isDark}/>
           </div>
@@ -2244,7 +2594,7 @@ function App(){
             startDate={startDate} handleStartDate={handleStartDate}
             sopDate={sopDate} handleSopDate={handleSopDate}
             gran={gran} setGran={setGran}
-            actYrBtn={actYrBtn} setDurDays={setDurDays}
+            actMoBtn={actMoBtn} setDurDays={setDurDays}
             devDays={devDays}
           />
 
@@ -2272,6 +2622,22 @@ function App(){
             completed={completed||{}} toggleComplete={toggleComplete}
             hiddenRows={hiddenRows} toggleRow={toggleRow}
             showTodayLine={showTodayLine} toggleTodayLine={()=>setShowTodayLine(v=>!v)}
+            customLanes={customLanes||[]}
+            deleteCustomLane={deleteCustomLane} renameCustomLane={renameCustomLane}
+            addCustomLaneBarFromClick={addCustomLaneBarFromClick}
+            deleteCustomLaneBar={deleteCustomLaneBar} renameCustomLaneBar={renameCustomLaneBar}
+            startCustomLaneDrag={startCustomLaneDrag}
+            onAddLane={e=>setPendingCreate({type:"customLane",clientX:e.clientX,clientY:e.clientY})}
+            buildMilestones={buildMilestones||[]} testMilestones={testMilestones||[]}
+            gateBars={gateBars||[]} reviewBars={reviewBars||[]}
+            startBuildMilestoneDrag={startBuildMilestoneDrag} startTestMilestoneDrag={startTestMilestoneDrag}
+            startCustomLaneMilestoneDrag={startCustomLaneMilestoneDrag}
+            startGateBarDrag={startGateBarDrag} startReviewBarDrag={startReviewBarDrag}
+            deleteBuildMilestone={deleteBuildMilestone} deleteTestMilestone={deleteTestMilestone}
+            deleteGateBar={deleteGateBar} deleteReviewBar={deleteReviewBar}
+            renameBuildMilestone={renameBuildMilestone} renameTestMilestone={renameTestMilestone}
+            renameGateBar={renameGateBar} renameReviewBar={renameReviewBar}
+            deleteCustomLaneMilestone={deleteCustomLaneMilestone} renameCustomLaneMilestone={renameCustomLaneMilestone}
           />
           </div>
 
@@ -2379,7 +2745,7 @@ function App(){
             compareIds={compareIds} onToggleCompare={toggleCompare}
             loadedKey={loadedScenarioKey} t={t} isDark={isDark} showSaveForm={true}/>
           <SharedScenarioTable sharedScenarios={sharedScenarios} loading={sharedLoading} shareError={shareError}
-            currentUser={currentUser} displayName={displayName} onRestore={restoreScenario} onUnpublish={unpublishScenario} onDuplicate={duplicatePublishedScenario} onRenameShared={renameSharedScenario}
+            currentUser={currentUser} onRestore={restoreScenario} onUnpublish={unpublishScenario} onDuplicate={duplicatePublishedScenario} onRenameShared={renameSharedScenario}
             onRefresh={loadSharedScenarios} compareIds={compareIds} onToggleCompare={toggleCompare}
             t={t} isDark={isDark}/>
         </div>
@@ -2391,7 +2757,7 @@ function App(){
 
 // ── ControlsBar ───────────────────────────────────────────────────────────────
 function ControlsBar({t,isDark,box,btn,inpS,mode,toggleFixed,startDate,handleStartDate,
-  sopDate,handleSopDate,gran,setGran,actYrBtn,setDurDays,devDays,mob}){
+  sopDate,handleSopDate,gran,setGran,actMoBtn,setDurDays,devDays,mob}){
   const fixStart=mode==="forward"||mode==="both";
   const fixSOP=mode==="backward"||mode==="both";
   return(
@@ -2425,9 +2791,9 @@ function ControlsBar({t,isDark,box,btn,inpS,mode,toggleFixed,startDate,handleSta
       </div>
       <div style={mob?{width:"100%"}:{}}>
         <div style={{fontSize:12,color:t.textMuted,marginBottom:4,fontWeight:600}}>Template Durations</div>
-        <div style={{display:"flex",gap:4}}>
-          {[1,2,3,4,5].map(y=>(
-            <button key={y} onClick={()=>setDurDays(Math.round(365.25*y))} style={{...btn(actYrBtn===y,true),flex:mob?1:undefined}}>{y}yr</button>
+        <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
+          {[12,18,24,30,36,48].map(mo=>(
+            <button key={mo} onClick={()=>setDurDays(Math.round(mo*30.44))} style={{...btn(actMoBtn===mo,true),flex:mob?1:undefined}}>{mo}mo</button>
           ))}
         </div>
       </div>
@@ -2454,6 +2820,79 @@ function ControlsBar({t,isDark,box,btn,inpS,mode,toggleFixed,startDate,handleSta
   );
 }
 
+// ── CustomLaneRow ─────────────────────────────────────────────────────────────
+function CustomLaneRow({lane,dspDevPos,devPhaseDate,t,isDark,completed,onToggleComplete,onAddBar,onDeleteLane,onRenameLane,onDeleteBar,onRenameBar,onDragBar,onDeleteMilestone,onRenameMilestone,onDragMilestone,tlW}){
+  const[menuPos,setMenuPos]=useState(null);
+  const[renameOpen,setRenameOpen]=useState(false);
+  const[renameVal,setRenameVal]=useState("");
+  const renameRef=useRef(null);
+  useEffect(()=>{if(renameOpen&&renameRef.current){renameRef.current.focus();renameRef.current.select();}},[renameOpen]);
+  const rl={fontSize:11,color:t.rowLbl,textTransform:"uppercase",letterSpacing:"0.7px",paddingLeft:2};
+  const mItem=(danger)=>({fontSize:12,color:danger?"#e05a5a":t.text,cursor:"pointer",padding:"6px 14px",background:"transparent",border:"none",textAlign:"left",width:"100%",display:"block",whiteSpace:"nowrap",fontWeight:danger?700:500});
+  const CLN_STEP=BUILD_BAR_H+8;
+  const w=tlW||800;
+  function clnMilHW(id){return(Math.max((id||"").length*6.2/2+10,10)+2)/w;}
+  // Pack bars and milestones together
+  const clnBarItems=(lane.bars||[]).map(b=>({id:'b'+b.key,x1:dspDevPos(b.phase,b.s),x2:dspDevPos(b.phase,b.e)}));
+  const clnMilItems=(lane.milestones||[]).map(m=>({id:'m'+m.key,x1:dspDevPos(m.phase,m.pos)-clnMilHW(m.id),x2:dspDevPos(m.phase,m.pos)+clnMilHW(m.id)}));
+  const clnAllItems=[...clnBarItems,...clnMilItems];
+  const clnLanes=packLanes(clnAllItems);
+  const clnLaneMap=Object.fromEntries(clnAllItems.map((m,i)=>[m.id,clnLanes[i]||0]));
+  const clnNumLanes=clnAllItems.length?Math.max(...clnLanes)+1:1;
+  const clnRowH=Math.max(BUILD_BAR_H+28,16+clnNumLanes*CLN_STEP+12);
+  return(
+    <div onDoubleClick={onAddBar} style={{position:"relative",height:clnRowH,marginTop:2,overflow:"visible",borderBottom:"1px solid "+t.gridLine,cursor:"crosshair"}}>
+      <div onDoubleClick={e=>e.stopPropagation()} style={{display:"inline-flex",alignItems:"center",gap:3,marginBottom:2,position:"relative",zIndex:10}}>
+        <span style={rl}>{lane.name}</span>
+        <button onMouseDown={e=>{e.stopPropagation();setMenuPos({x:e.clientX,y:e.clientY});}}
+          style={{fontSize:14,color:t.textDim,background:"none",border:"none",cursor:"pointer",padding:"0 3px",lineHeight:1,borderRadius:2,display:"flex",alignItems:"center",flexShrink:0}}>⋮</button>
+      </div>
+      {(lane.bars||[]).map((b)=>{
+        const x1=dspDevPos(b.phase,b.s),x2=dspDevPos(b.phase,b.e);const ckey="clane-"+lane.key+"-"+b.key;
+        return<DragBar key={b.key} x1={x1} x2={x2} label={b.id} topOffset={16+(clnLaneMap['b'+b.key]||0)*CLN_STEP}
+          dateStart={devPhaseDate(b.phase,b.s)} dateEnd={devPhaseDate(b.phase,b.e)}
+          t={t} isDark={isDark} barColor={lane.color}
+          onDragLeft={e=>onDragBar(e,b.key,"left",b)}
+          onDragRight={e=>onDragBar(e,b.key,"right",b)}
+          onDragBody={e=>onDragBar(e,b.key,"body",b)}
+          onDelete={()=>onDeleteBar(b.key)}
+          onRename={id=>onRenameBar(b.key,id)}
+          completed={!!(completed&&completed[ckey])} onToggleComplete={()=>onToggleComplete(ckey)}/>;
+      })}
+      {(lane.milestones||[]).map((m)=>{
+        const x=dspDevPos(m.phase,m.pos);
+        return<Diamond key={"m"+m.key} x={x} label={m.id} color={lane.color} sz={11}
+          tc={t.milTx} sc={t.milSub} date={devPhaseDate(m.phase,m.pos)} t={t}
+          topOffset={16+(clnLaneMap['m'+m.key]||0)*CLN_STEP}
+          onDragStart={e=>onDragMilestone?.(e,m.key,m)}
+          onDelete={()=>onDeleteMilestone?.(m.key)}
+          onRename={id=>onRenameMilestone?.(m.key,id)}/>;
+      })}
+      {menuPos&&ReactDOM.createPortal(<>
+        <div style={{position:"fixed",inset:0,zIndex:1998}} onMouseDown={()=>setMenuPos(null)}/>
+        <div style={{position:"fixed",left:Math.min(menuPos.x,window.innerWidth-160),top:Math.min(menuPos.y,window.innerHeight-100),zIndex:1999,background:t.panel,border:"1px solid "+t.border,borderRadius:6,boxShadow:"0 4px 20px rgba(0,0,0,0.25)",minWidth:140,padding:"4px 0",overflow:"hidden"}}>
+          <button onMouseDown={e=>{e.stopPropagation();setRenameVal(lane.name);setRenameOpen(true);setMenuPos(null);}} style={mItem()}>✏ Rename lane</button>
+          <div style={{height:1,background:t.border,margin:"4px 0"}}/>
+          <button onMouseDown={e=>{e.stopPropagation();onDeleteLane();setMenuPos(null);}} style={mItem(true)}>🗑 Delete lane</button>
+        </div>
+      </>,document.body)}
+      {renameOpen&&ReactDOM.createPortal(<>
+        <div style={{position:"fixed",inset:0,zIndex:1998}} onMouseDown={()=>setRenameOpen(false)}/>
+        <div style={{position:"fixed",left:"50%",top:"35%",transform:"translate(-50%,-50%)",zIndex:1999,background:t.panel,border:"1px solid "+t.border,borderRadius:7,padding:"14px 16px",boxShadow:"0 8px 32px rgba(0,0,0,0.32)",width:240}} onMouseDown={e=>e.stopPropagation()}>
+          <div style={{fontSize:11,color:t.textMuted,fontWeight:700,textTransform:"uppercase",letterSpacing:0.5,marginBottom:8}}>Rename Lane</div>
+          <input ref={renameRef} value={renameVal} onChange={e=>setRenameVal(e.target.value)}
+            onKeyDown={e=>{if(e.key==="Enter"&&renameVal.trim()){onRenameLane(renameVal.trim());setRenameOpen(false);}if(e.key==="Escape")setRenameOpen(false);}}
+            style={{width:"100%",fontSize:13,padding:"6px 8px",borderRadius:4,border:"1px solid "+t.inBorder,background:t.inBg,color:t.inText,outline:"none",marginBottom:10,boxSizing:"border-box"}}/>
+          <div style={{display:"flex",gap:6,justifyContent:"flex-end"}}>
+            <button onMouseDown={()=>setRenameOpen(false)} style={{padding:"5px 12px",borderRadius:4,border:"1px solid "+t.border,cursor:"pointer",fontSize:12,fontWeight:600,background:t.btnBg,color:t.btnText}}>Cancel</button>
+            <button onMouseDown={()=>{if(renameVal.trim()){onRenameLane(renameVal.trim());setRenameOpen(false);}}} style={{padding:"5px 14px",borderRadius:4,border:"none",cursor:"pointer",fontSize:12,fontWeight:700,background:t.btnAct,color:"#fff"}}>Save</button>
+          </div>
+        </div>
+      </>,document.body)}
+    </div>
+  );
+}
+
 // ── TimelinePanel ─────────────────────────────────────────────────────────────
 function TimelinePanel({t,isDark,box,timelineRef,rowLbl,ticks,dspDevFrac,dspLaunchFrac,
   todayDispFrac,showToday,showG7,truncated,startDate,displayEndDate,sopDate,launchEndDate,
@@ -2463,44 +2902,62 @@ function TimelinePanel({t,isDark,box,timelineRef,rowLbl,ticks,dspDevFrac,dspLaun
   deleteDb,splitDb,deleteTr,deleteTestBar,renameBuildBar,renameTestBar,addBuildBar,addTestBar,
   customTrs,customGates,addCustomTr,addCustomGate,deleteCustomTr,deleteCustomGate,
   renameCustomTr,renameCustomGate,startCustomTrDrag,startCustomGateDrag,
-  completed,toggleComplete,hiddenRows,toggleRow,showTodayLine,toggleTodayLine,mob}){
+  completed,toggleComplete,hiddenRows,toggleRow,showTodayLine,toggleTodayLine,
+  customLanes,deleteCustomLane,renameCustomLane,addCustomLaneBarFromClick,
+  deleteCustomLaneBar,renameCustomLaneBar,startCustomLaneDrag,onAddLane,mob,
+  buildMilestones,testMilestones,gateBars,reviewBars,
+  startBuildMilestoneDrag,startTestMilestoneDrag,startCustomLaneMilestoneDrag,
+  startGateBarDrag,startReviewBarDrag,
+  deleteBuildMilestone,deleteTestMilestone,deleteGateBar,deleteReviewBar,
+  renameBuildMilestone,renameTestMilestone,renameGateBar,renameReviewBar,
+  deleteCustomLaneMilestone,renameCustomLaneMilestone}){
   const legendBg=isDark?"rgba(255,255,255,0.03)":"#f0f2f5";
   const[collapsed,setCollapsed]=useState(false);
-  const[containerW,setContainerW]=useState(0);
-  useEffect(()=>{
-    const el=timelineRef.current;if(!el)return;
-    setContainerW(el.getBoundingClientRect().width);
-    const ro=new ResizeObserver(es=>setContainerW(es[0].contentRect.width));
-    ro.observe(el);return()=>ro.disconnect();
-  },[]);
-  const DLVL=36,BLVL=BUILD_BAR_H+8;
-  // Diamond levels — gates
-  const gateItems=[
-    ...n.map((_,i)=>({id:"g"+i,x:dspDevFrac*(st[i]+n[i]),label:"G"+i,sub:i===6?"SOP":i===5?"Model Fix":undefined})),
-    ...(showG7?[{id:"g7",x:dspDevFrac+dspLaunchFrac,label:"G7"}]:[]),
-    ...(customGates||[]).map(g=>({id:"cg"+g.key,x:dspDevPos(g.phase,g.pos),label:g.id}))
+  // ── Lane packing for overlap prevention ────────────────────────────────────
+  const BAR_LANE_STEP=BUILD_BAR_H+8,MIL_LANE_STEP=58;
+  const milLaneTop=li=>18+li*MIL_LANE_STEP;
+  const barLaneTop=li=>16+li*BAR_LANE_STEP;
+  const milLaneRowH=nl=>Math.max(74,18+nl*MIL_LANE_STEP);
+  const barLaneRowH=nl=>Math.max(BUILD_BAR_H+28,16+nl*BAR_LANE_STEP+12);
+  // Dynamic half-width per label — prevents text overlap while allowing tighter packing
+  const tlW=timelineRef.current?.clientWidth||800;
+  function milHW(id){return(Math.max((id||"").length*6.2/2+10,10)+2)/tlW;}
+  // Gates row: milestones + custom gate bars
+  const gateAllItems=[
+    ...n.map((_,i)=>({id:'g'+i,x1:dspDevFrac*(st[i]+n[i])-milHW('G'+i),x2:dspDevFrac*(st[i]+n[i])+milHW('G'+i)})),
+    ...(showG7?[{id:'g7',x1:dspDevFrac+dspLaunchFrac-milHW('G7'),x2:dspDevFrac+dspLaunchFrac+milHW('G7')}]:[]),
+    ...(customGates||[]).map(g=>({id:'cg'+g.key,x1:dspDevPos(g.phase,g.pos)-milHW(g.id),x2:dspDevPos(g.phase,g.pos)+milHW(g.id)})),
+    ...(gateBars||[]).map(b=>({id:'gb'+b.key,x1:dspDevPos(b.phase,b.s),x2:dspDevPos(b.phase,b.e)})),
   ];
-  const gateLvls=resolveDiamondLevels(gateItems,containerW);
-  const gateMaxLvl=Math.max(0,...Object.values(gateLvls));
-  const gateH=74+gateMaxLvl*DLVL;
-  // Diamond levels — tech reviews
-  const trItems=[
-    ...DEFAULT_TR.map((tr,i)=>trVisible[i]?{id:"tr"+i,x:dspDevPos(tr.phase,trPos[i]),label:tr.id}:null).filter(Boolean),
-    ...(customTrs||[]).map(tr=>({id:"ct"+tr.key,x:dspDevPos(tr.phase,tr.pos),label:tr.id}))
+  const gLanes=packLanes(gateAllItems);
+  const gLaneMap=Object.fromEntries(gateAllItems.map((m,i)=>[m.id,gLanes[i]||0]));
+  const gRowH=milLaneRowH(gateAllItems.length?Math.max(...gLanes)+1:1);
+  // Reviews row: tech review milestones + custom review bars
+  const trAllItems=[
+    ...DEFAULT_TR.map((tr,i)=>trVisible[i]?{id:'tr'+i,x1:dspDevPos(tr.phase,trPos[i])-milHW(tr.id),x2:dspDevPos(tr.phase,trPos[i])+milHW(tr.id)}:null).filter(Boolean),
+    ...(customTrs||[]).map(tr=>({id:'ctr'+tr.key,x1:dspDevPos(tr.phase,tr.pos)-milHW(tr.id),x2:dspDevPos(tr.phase,tr.pos)+milHW(tr.id)})),
+    ...(reviewBars||[]).map(b=>({id:'rb'+b.key,x1:dspDevPos(b.phase,b.s),x2:dspDevPos(b.phase,b.e)})),
   ];
-  const trLvls=resolveDiamondLevels(trItems,containerW);
-  const trMaxLvl=Math.max(0,...Object.values(trLvls));
-  const trH=74+trMaxLvl*DLVL;
-  // Bar levels — builds
-  const buildItems=(dbList||[]).map(b=>({id:b.key,x1:dspDevPos(b.phase,b.s),x2:dspDevPos(b.phase,b.e)}));
-  const buildLvls=resolveBarLevels(buildItems);
-  const buildMaxLvl=Math.max(0,...Object.values(buildLvls));
-  const buildH=BUILD_BAR_H+28+buildMaxLvl*BLVL;
-  // Bar levels — testing
-  const testItems=(testBars||[]).map(b=>({id:b.key,x1:dspDevPos(b.phase,b.s),x2:dspDevPos(b.phase,b.e)}));
-  const testLvls=resolveBarLevels(testItems);
-  const testMaxLvl=Math.max(0,...Object.values(testLvls));
-  const testH=BUILD_BAR_H+28+testMaxLvl*BLVL;
+  const tLanes=packLanes(trAllItems);
+  const tLaneMap=Object.fromEntries(trAllItems.map((m,i)=>[m.id,tLanes[i]||0]));
+  const trRowH=milLaneRowH(trAllItems.length?Math.max(...tLanes)+1:1);
+  // Builds row: build bars + custom build milestones
+  const bldAllItems=[
+    ...(dbList||[]).map(b=>({id:'bld'+b.key,x1:dspDevPos(b.phase,b.s),x2:dspDevPos(b.phase,b.e)})),
+    ...(buildMilestones||[]).map(m=>({id:'bm'+m.key,x1:dspDevPos(m.phase,m.pos)-milHW(m.id),x2:dspDevPos(m.phase,m.pos)+milHW(m.id)})),
+  ];
+  const bldLanes=packLanes(bldAllItems);
+  const bldLaneMap=Object.fromEntries(bldAllItems.map((m,i)=>[m.id,bldLanes[i]||0]));
+  const bldRowH=barLaneRowH(bldAllItems.length?Math.max(...bldLanes)+1:1);
+  // Testing row: test bars + custom test milestones
+  const tstAllItems=[
+    ...(testBars||[]).map(b=>({id:'tst'+b.key,x1:dspDevPos(b.phase,b.s),x2:dspDevPos(b.phase,b.e)})),
+    ...(testMilestones||[]).map(m=>({id:'tm'+m.key,x1:dspDevPos(m.phase,m.pos)-milHW(m.id),x2:dspDevPos(m.phase,m.pos)+milHW(m.id)})),
+  ];
+  const tstLanes=packLanes(tstAllItems);
+  const tstLaneMap=Object.fromEntries(tstAllItems.map((m,i)=>[m.id,tstLanes[i]||0]));
+  const tstRowH=barLaneRowH(tstAllItems.length?Math.max(...tstLanes)+1:1);
+  // ────────────────────────────────────────────────────────────────────────────
   return(
     <div style={{...box,padding:mob?"14px 14px":"20px 22px",minWidth:mob?600:undefined}}>
       <div onClick={()=>setCollapsed(v=>!v)} style={{cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:collapsed?0:10}}>
@@ -2599,73 +3056,138 @@ function TimelinePanel({t,isDark,box,timelineRef,rowLbl,ticks,dspDevFrac,dspLaun
           </div>
 
           {/* Phase Exit Gate Reviews */}
-          {!hiddenRows.gates&&<div onDoubleClick={addCustomGate} style={{position:"relative",height:gateH,marginTop:2,overflow:"visible",borderBottom:"1px solid "+t.gridLine,cursor:"crosshair"}}>
+          {!hiddenRows.gates&&<div onDoubleClick={addCustomGate} style={{position:"relative",height:gRowH,marginTop:2,overflow:"visible",borderBottom:"1px solid "+t.gridLine,cursor:"crosshair"}}>
             <span style={rowLbl}>Phase Exit Gate Reviews</span>
             {n.map((_,i)=>{const x=dspDevFrac*(st[i]+n[i]);const ckey="gate-"+i;return<Diamond key={i} x={x} label={"G"+i}
               sub={i===6?"SOP":i===5?"Model Fix":undefined} color={GATE_COLOR} sz={i===6?15:11}
               tc={t.milTx} sc={t.milSub} date={devPhaseDate(i,1)} desc={GATE_DESC[i]} t={t}
-              topOffset={(gateLvls["g"+i]||0)*DLVL}
+              topOffset={milLaneTop(gLaneMap['g'+i]||0)}
               completed={!!(completed&&completed[ckey])} onToggleComplete={()=>toggleComplete(ckey)}/>;}) }
-            {showG7&&(()=>{const ckey="gate-7";return<Diamond x={dspDevFrac+dspLaunchFrac} label="G7" color={GATE_COLOR} sz={11} tc={t.milTx} sc={t.milSub} date={launchEndDate} desc={GATE_DESC[7]} t={t} topOffset={(gateLvls["g7"]||0)*DLVL} completed={!!(completed&&completed[ckey])} onToggleComplete={()=>toggleComplete(ckey)}/>;})()}
+            {showG7&&(()=>{const ckey="gate-7";return<Diamond x={dspDevFrac+dspLaunchFrac} label="G7" color={GATE_COLOR} sz={11} tc={t.milTx} sc={t.milSub} date={launchEndDate} desc={GATE_DESC[7]} t={t} topOffset={milLaneTop(gLaneMap['g7']||0)} completed={!!(completed&&completed[ckey])} onToggleComplete={()=>toggleComplete(ckey)}/>;})()}
             {customGates.map(g=>{const x=dspDevPos(g.phase,g.pos);const ckey="cgate-"+g.key;
               return<Diamond key={"cgate-"+g.key} x={x} label={g.id} color={GATE_COLOR} sz={11}
                 tc={t.milTx} sc={t.milSub} date={devPhaseDate(g.phase,g.pos)} t={t}
+                topOffset={milLaneTop(gLaneMap['cg'+g.key]||0)}
                 onDragStart={e=>startCustomGateDrag(e,g)} onDelete={()=>deleteCustomGate(g.key)}
                 onRename={id=>renameCustomGate(g.key,id)}
-                topOffset={(gateLvls["cg"+g.key]||0)*DLVL}
                 completed={!!(completed&&completed[ckey])} onToggleComplete={()=>toggleComplete(ckey)}/>;
+            })}
+            {(gateBars||[]).map(b=>{const x1=dspDevPos(b.phase,b.s),x2=dspDevPos(b.phase,b.e);
+              return<DragBar key={"gb"+b.key} x1={x1} x2={x2} label={b.id}
+                dateStart={devPhaseDate(b.phase,b.s)} dateEnd={devPhaseDate(b.phase,b.e)}
+                t={t} isDark={isDark} barColor={GATE_COLOR}
+                topOffset={milLaneTop(gLaneMap['gb'+b.key]||0)}
+                onDragLeft={e=>startGateBarDrag(e,b.key,"left",b)}
+                onDragRight={e=>startGateBarDrag(e,b.key,"right",b)}
+                onDragBody={e=>startGateBarDrag(e,b.key,"body",b)}
+                onDelete={()=>deleteGateBar(b.key)}
+                onRename={id=>renameGateBar(b.key,id)}/>;
             })}
           </div>}
 
           {/* Tech Reviews */}
-          {!hiddenRows.reviews&&<div onDoubleClick={addCustomTr} style={{position:"relative",height:trH,marginTop:2,overflow:"visible",borderBottom:"1px solid "+t.gridLine,cursor:"crosshair"}}>
+          {!hiddenRows.reviews&&<div onDoubleClick={addCustomTr} style={{position:"relative",height:trRowH,marginTop:2,overflow:"visible",borderBottom:"1px solid "+t.gridLine,cursor:"crosshair"}}>
             <span style={rowLbl}>Program Tech Reviews</span>
             {DEFAULT_TR.map((tr,i)=>{if(!trVisible[i])return null;const x=dspDevPos(tr.phase,trPos[i]);const ckey="tr-"+tr.id;
               return<Diamond key={tr.id} x={x} label={tr.id} color={TR_COLOR} sz={12}
                 tc={t.milTx} sc={t.milSub} date={devPhaseDate(tr.phase,trPos[i])} desc={tr.desc} t={t}
+                topOffset={milLaneTop(tLaneMap['tr'+i]||0)}
                 onDragStart={e=>startTrDrag(e,i)} onDelete={()=>deleteTr(i)}
-                topOffset={(trLvls["tr"+i]||0)*DLVL}
                 completed={!!(completed&&completed[ckey])} onToggleComplete={()=>toggleComplete(ckey)}/>;}) }
             {customTrs.map(tr=>{const x=dspDevPos(tr.phase,tr.pos);const ckey="ctr-"+tr.key;
               return<Diamond key={"ctr-"+tr.key} x={x} label={tr.id} color={TR_COLOR} sz={12}
                 tc={t.milTx} sc={t.milSub} date={devPhaseDate(tr.phase,tr.pos)} t={t}
+                topOffset={milLaneTop(tLaneMap['ctr'+tr.key]||0)}
                 onDragStart={e=>startCustomTrDrag(e,tr)} onDelete={()=>deleteCustomTr(tr.key)}
                 onRename={id=>renameCustomTr(tr.key,id)}
-                topOffset={(trLvls["ct"+tr.key]||0)*DLVL}
                 completed={!!(completed&&completed[ckey])} onToggleComplete={()=>toggleComplete(ckey)}/>;
+            })}
+            {(reviewBars||[]).map(b=>{const x1=dspDevPos(b.phase,b.s),x2=dspDevPos(b.phase,b.e);
+              return<DragBar key={"rb"+b.key} x1={x1} x2={x2} label={b.id}
+                dateStart={devPhaseDate(b.phase,b.s)} dateEnd={devPhaseDate(b.phase,b.e)}
+                t={t} isDark={isDark} barColor={TR_COLOR}
+                topOffset={milLaneTop(tLaneMap['rb'+b.key]||0)}
+                onDragLeft={e=>startReviewBarDrag(e,b.key,"left",b)}
+                onDragRight={e=>startReviewBarDrag(e,b.key,"right",b)}
+                onDragBody={e=>startReviewBarDrag(e,b.key,"body",b)}
+                onDelete={()=>deleteReviewBar(b.key)}
+                onRename={id=>renameReviewBar(b.key,id)}/>;
             })}
           </div>}
 
           {/* Robot Builds */}
-          {!hiddenRows.builds&&<div onDoubleClick={addBuildBar} style={{position:"relative",height:buildH,marginTop:2,overflow:"visible",borderBottom:"1px solid "+t.gridLine,cursor:"crosshair"}}>
+          {!hiddenRows.builds&&<div onDoubleClick={addBuildBar} style={{position:"relative",height:bldRowH,marginTop:2,overflow:"visible",borderBottom:"1px solid "+t.gridLine,cursor:"crosshair"}}>
             <span style={rowLbl}>Robot Builds</span>
-            {dbList.map(b=>{const x1=dspDevPos(b.phase,b.s),x2=dspDevPos(b.phase,b.e),lbl=b.label||getLabelForBar(b,dbList);const ckey="build-"+b.key;
+            {dbList.map((b)=>{const x1=dspDevPos(b.phase,b.s),x2=dspDevPos(b.phase,b.e),lbl=b.label||getLabelForBar(b,dbList);const ckey="build-"+b.key;
               return<DragBar key={b.key} x1={x1} x2={x2} label={lbl}
                 dateStart={devPhaseDate(b.phase,b.s)} dateEnd={devPhaseDate(b.phase,b.e)} t={t} isDark={isDark}
+                topOffset={barLaneTop(bldLaneMap['bld'+b.key]||0)}
                 onDragLeft={e=>startBuildDrag(e,b.key,"left",b)}
                 onDragRight={e=>startBuildDrag(e,b.key,"right",b)}
                 onDragBody={e=>startBuildDrag(e,b.key,"body",b)}
                 onDelete={()=>deleteDb(b.key)} onSplit={()=>splitDb(b.key)}
                 onRename={label=>renameBuildBar(b.key,label)}
-                topOffset={(buildLvls[b.key]||0)*BLVL}
                 completed={!!(completed&&completed[ckey])} onToggleComplete={()=>toggleComplete(ckey)}/>;}) }
+            {(buildMilestones||[]).map(m=>{const x=dspDevPos(m.phase,m.pos);
+              return<Diamond key={"bm"+m.key} x={x} label={m.id} color="#b94a08" sz={11}
+                tc={t.milTx} sc={t.milSub} date={devPhaseDate(m.phase,m.pos)} t={t}
+                topOffset={barLaneTop(bldLaneMap['bm'+m.key]||0)}
+                onDragStart={e=>startBuildMilestoneDrag(e,m.key,m)}
+                onDelete={()=>deleteBuildMilestone(m.key)}
+                onRename={id=>renameBuildMilestone(m.key,id)}/>;
+            })}
           </div>}
 
           {/* Testing */}
-          {!hiddenRows.testing&&<div onDoubleClick={addTestBar} style={{position:"relative",height:testH,marginTop:2,overflow:"visible",cursor:"crosshair"}}>
+          {!hiddenRows.testing&&<div onDoubleClick={addTestBar} style={{position:"relative",height:tstRowH,marginTop:2,overflow:"visible",cursor:"crosshair"}}>
             <span style={rowLbl}>Testing</span>
-            {(testBars||[]).map(b=>{const x1=dspDevPos(b.phase,b.s),x2=dspDevPos(b.phase,b.e);const ckey="test-"+b.key;
+            {(testBars||[]).map((b)=>{const x1=dspDevPos(b.phase,b.s),x2=dspDevPos(b.phase,b.e);const ckey="test-"+b.key;
               return<DragBar key={b.key} x1={x1} x2={x2} label={b.id}
                 dateStart={devPhaseDate(b.phase,b.s)} dateEnd={devPhaseDate(b.phase,b.e)}
                 t={t} isDark={isDark} barColor="#5b6abf"
+                topOffset={barLaneTop(tstLaneMap['tst'+b.key]||0)}
                 onDragLeft={e=>startTestDrag(e,b.key,"left",b)}
                 onDragRight={e=>startTestDrag(e,b.key,"right",b)}
                 onDragBody={e=>startTestDrag(e,b.key,"body",b)}
                 onDelete={()=>deleteTestBar(b.key)}
                 onRename={label=>renameTestBar(b.key,label)}
-                topOffset={(testLvls[b.key]||0)*BLVL}
                 completed={!!(completed&&completed[ckey])} onToggleComplete={()=>toggleComplete(ckey)}/>;}) }
+            {(testMilestones||[]).map(m=>{const x=dspDevPos(m.phase,m.pos);
+              return<Diamond key={"tm"+m.key} x={x} label={m.id} color="#5b6abf" sz={11}
+                tc={t.milTx} sc={t.milSub} date={devPhaseDate(m.phase,m.pos)} t={t}
+                topOffset={barLaneTop(tstLaneMap['tm'+m.key]||0)}
+                onDragStart={e=>startTestMilestoneDrag(e,m.key,m)}
+                onDelete={()=>deleteTestMilestone(m.key)}
+                onRename={id=>renameTestMilestone(m.key,id)}/>;
+            })}
           </div>}
+
+          {/* Custom Swimlanes */}
+          {(customLanes||[]).length>0&&<div style={{borderTop:"1px solid "+t.gridLine}}>
+            {(customLanes||[]).map(lane=>hiddenRows["clane-"+lane.key]?null:(
+              <CustomLaneRow key={lane.key} lane={lane} dspDevPos={dspDevPos} devPhaseDate={devPhaseDate}
+                t={t} isDark={isDark} completed={completed||{}} onToggleComplete={toggleComplete}
+                tlW={tlW}
+                onAddBar={e=>addCustomLaneBarFromClick(lane.key,e)}
+                onDeleteLane={()=>deleteCustomLane(lane.key)}
+                onRenameLane={name=>renameCustomLane(lane.key,name)}
+                onDeleteBar={barKey=>deleteCustomLaneBar(lane.key,barKey)}
+                onRenameBar={(barKey,id)=>renameCustomLaneBar(lane.key,barKey,id)}
+                onDragBar={(e,bKey,side,b)=>startCustomLaneDrag(e,lane.key,bKey,side,b)}
+                onDeleteMilestone={mKey=>deleteCustomLaneMilestone(lane.key,mKey)}
+                onRenameMilestone={(mKey,id)=>renameCustomLaneMilestone(lane.key,mKey,id)}
+                onDragMilestone={(e,mKey,m)=>startCustomLaneMilestoneDrag(e,lane.key,mKey,m)}/>
+            ))}
+          </div>}
+
+          {/* Add Swimlane button */}
+          <div onClick={onAddLane}
+            style={{position:"relative",height:30,marginTop:6,overflow:"hidden",border:"1px dashed "+t.border,borderRadius:4,display:"flex",alignItems:"center",justifyContent:"center",gap:5,cursor:"pointer",color:t.textDim,fontSize:11,fontWeight:600,userSelect:"none",transition:"border-color 0.15s,color 0.15s"}}
+            onMouseEnter={e=>{e.currentTarget.style.borderColor=t.btnAct;e.currentTarget.style.color=t.btnAct;}}
+            onMouseLeave={e=>{e.currentTarget.style.borderColor=t.border;e.currentTarget.style.color=t.textDim;}}>
+            <svg width={11} height={11} viewBox="0 0 11 11"><line x1={5.5} y1={1} x2={5.5} y2={10} stroke="currentColor" strokeWidth={1.8} strokeLinecap="round"/><line x1={1} y1={5.5} x2={10} y2={5.5} stroke="currentColor" strokeWidth={1.8} strokeLinecap="round"/></svg>
+            Add Swimlane
+          </div>
         </div>
 
         {/* Bottom ruler — duplicate scale, labels below ticks */}
@@ -2692,6 +3214,10 @@ function TimelinePanel({t,isDark,box,timelineRef,rowLbl,ticks,dspDevFrac,dspLaun
             <LegendItem shape="diamond" color={TR_COLOR}   label="Tech Review"  tc={t.textMuted} onClick={()=>toggleRow("reviews")} hidden={hiddenRows.reviews}/>
             <LegendItem shape="bar"     color="#b94a08"    label="Robot Build"  tc={t.textMuted} onClick={()=>toggleRow("builds")} hidden={hiddenRows.builds}/>
             <LegendItem shape="bar"     color="#5b6abf"    label="Testing"      tc={t.textMuted} onClick={()=>toggleRow("testing")} hidden={hiddenRows.testing}/>
+            {(customLanes||[]).map(lane=>(
+              <LegendItem key={lane.key} shape="bar" color={lane.color} label={lane.name} tc={t.textMuted}
+                onClick={()=>toggleRow("clane-"+lane.key)} hidden={!!(hiddenRows&&hiddenRows["clane-"+lane.key])}/>
+            ))}
             {showToday&&<LegendItem shape="bar" color="#e74c3c" label="Today" tc={t.textMuted} onClick={toggleTodayLine} hidden={!showTodayLine}/>}
           </div>
         </div>

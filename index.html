@@ -153,6 +153,10 @@ function resequence(list, fam) {
 }
 function buildLabel(fam, seq, siblings) { return siblings > 1 ? `${fam}${seq}` : `${fam}-Build`; }
 function today0() { const d = new Date(); d.setHours(0, 0, 0, 0); return d; }
+// ── Demo mode: local-only scenario storage (no Supabase session) ────────────
+const DEMO_SCENARIOS_KEY="tlDemoScenarios";
+function loadDemoScenarios(){ try{const a=JSON.parse(localStorage.getItem(DEMO_SCENARIOS_KEY)||"[]");return Array.isArray(a)?a:[];}catch(e){return[];} }
+function saveDemoScenarios(arr){ try{localStorage.setItem(DEMO_SCENARIOS_KEY,JSON.stringify(arr));}catch(e){} }
 function eggName(n){ return n.trim().toLowerCase()==="max"?"🎉 Qrevify! 🎉":n; }
 function triggerConfetti(){
   const canvas=document.createElement('canvas');
@@ -1498,7 +1502,7 @@ function CompareView({selected,compareAlign,setCompareAlign,hiddenRows,toggleRow
 }
 
 // ── Sign-in screen (shown when no Supabase session) ──────────────────────────
-function SignInScreen({isDark,setDark,t}){
+function SignInScreen({isDark,setDark,t,onBack}){
   const[email,setEmail]=useState("");
   const[sent,setSent]=useState(false);
   const[loading,setLoading]=useState(false);
@@ -1515,6 +1519,7 @@ function SignInScreen({isDark,setDark,t}){
   }
   return(
     <div style={{minHeight:"100vh",background:t.bg,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",fontFamily:"Inter,system-ui,sans-serif",padding:20,boxSizing:"border-box"}}>
+      {onBack&&<button onClick={onBack} style={{position:"absolute",top:16,left:16,padding:"6px 12px",borderRadius:5,border:"1px solid "+t.border,background:t.btnBg,color:t.btnText,cursor:"pointer",fontSize:13,fontWeight:600}}>← Back to demo</button>}
       <div style={{position:"absolute",top:16,right:16,display:"flex",borderRadius:5,overflow:"hidden",border:"1px solid "+t.border}}>
         {[{v:false,icon:<SunIcon/>,lbl:"Light"},{v:true,icon:<MoonIcon/>,lbl:"Dark"}].map(item=>(
           <button key={item.lbl} onClick={()=>setDark(item.v)} style={{padding:"5px 11px",border:"none",cursor:"pointer",display:"flex",alignItems:"center",gap:5,fontSize:13,fontWeight:600,background:isDark===item.v?t.btnAct:t.btnBg,color:isDark===item.v?"#fff":t.btnText,transition:"background 0.15s"}}>{item.icon}{item.lbl}</button>
@@ -1522,7 +1527,7 @@ function SignInScreen({isDark,setDark,t}){
       </div>
       <div style={{width:"100%",maxWidth:400,background:t.cardBg,border:"1px solid "+t.cardBorder,borderRadius:12,padding:"32px 36px",boxShadow:"0 4px 24px rgba(0,0,0,0.10)"}}>
         <div style={{fontSize:22,fontWeight:800,color:t.text,marginBottom:6,letterSpacing:0.2}}>TimelineIQ</div>
-        <div style={{fontSize:13,color:t.textMuted,marginBottom:28,lineHeight:1.6}}>Sign in with your email to access your saved scenarios. No password needed — we'll send a magic link.</div>
+        <div style={{fontSize:13,color:t.textMuted,marginBottom:28,lineHeight:1.6}}>Sign in with your email to save scenarios permanently and publish them for others. No password needed — we'll send a magic link.</div>
         {sent?(
           <div style={{textAlign:"center",padding:"20px 0"}}>
             <div style={{fontSize:36,marginBottom:12}}>📬</div>
@@ -1790,7 +1795,7 @@ function HelpPage({t,isDark,mob,onClose}){
         <div style={body}>
           <div style={{marginBottom:14}}>
             <div style={{...hi,marginBottom:5,fontSize:13}}>Saving</div>
-            Type a name in the <span style={hi}>Scenario Name</span> field in the Scheduling panel and click <span style={hi}>Save</span>. Scenarios are stored in your account. Use <span style={hi}>Overwrite</span> to update a scenario you've already loaded.
+            Type a name in the <span style={hi}>Scenario Name</span> field in the Scheduling panel and click <span style={hi}>Save</span>. Signed-in users get scenarios stored in their account; in Demo Mode, scenarios save to this browser only. Use <span style={hi}>Overwrite</span> to update a scenario you've already loaded.
           </div>
           <div style={{marginBottom:14}}>
             <div style={{...hi,marginBottom:5,fontSize:13}}>Loading</div>
@@ -1914,6 +1919,7 @@ function App(){
   const[session,setSession]=useState(null);
   const currentUser=useMemo(()=>session?.user?.email||"",[session]);
   const[authLoading,setAuthLoading]=useState(true);
+  const[showSignIn,setShowSignIn]=useState(false);
   const[sharedScenarios,setSharedScenarios]=useState([]);
   const[sharedLoading,setSharedLoading]=useState(true);
   const[shareError,setShareError]=useState("");
@@ -2122,6 +2128,7 @@ function App(){
   function sbRow(r){return{key:r.id,name:r.name,...r.data,created:new Date(r.created_at).getTime(),modified:new Date(r.updated_at||r.created_at).getTime()};}
   function sbSharedRow(r){return{...r.data,key:r.scenario_key,name:r.name,owner:r.owner,publishedAt:r.published_at?new Date(r.published_at).getTime():Date.now(),source:"published"};}
   async function loadScenarios(){
+    if(!session){setScenarios(loadDemoScenarios());setScenariosLoading(false);return;}
     setScenariosLoading(true);
     try{const{data,error}=await sbClient.from('scenarios').select('*').order('created_at',{ascending:false});
       if(error)throw error;
@@ -2129,13 +2136,19 @@ function App(){
     }catch(e){setScenarios([]);setSaveError("Failed to load saved scenarios. Try refreshing.");}
     finally{setScenariosLoading(false);}
   }
-  useEffect(()=>{loadScenarios();},[]);
+  useEffect(()=>{if(!authLoading)loadScenarios();},[authLoading,currentUser]);
 
   async function saveScenario(){
     setSaveError("");const name=scenarioName.trim();
     if(!name){setSaveError("Please enter a name.");return;}
     if(scenarios.find(s=>s.name===name)){setSaveError("A scenario with that name already exists. Use Overwrite to replace it.");return;}
     const payload={...snap,anchor:toInp(anchor),mode,gran};
+    if(!session){
+      const row={key:"demo:"+Date.now(),name,...payload,created:Date.now(),modified:Date.now()};
+      const next=[row,...scenarios];
+      setScenarios(next);saveDemoScenarios(next);setScName("");
+      return;
+    }
     const{data,error}=await sbClient.from('scenarios').insert({name,data:payload}).select().single();
     if(error){setSaveError("Failed to save. Try again.");return;}
     setScenarios(prev=>[sbRow(data),...prev]);
@@ -2143,6 +2156,11 @@ function App(){
   }
   async function overwriteScenario(key){
     const payload={...snap,anchor:toInp(anchor),mode,gran};
+    if(!session){
+      const next=scenarios.map(s=>s.key===key?{...s,...payload,modified:Date.now()}:s);
+      setScenarios(next);saveDemoScenarios(next);
+      return;
+    }
     const{data,error}=await sbClient.from('scenarios').update({data:payload,updated_at:new Date().toISOString()}).eq('id',key).select().single();
     if(error){setSaveError("Failed to overwrite. Try again.");return;}
     setScenarios(prev=>prev.map(s=>s.key===key?sbRow(data):s));
@@ -2169,15 +2187,26 @@ function App(){
     // REMOVED: auto-select on load (was adding to compareIds)
   }
   async function deleteScenario(key){
-    const{error}=await sbClient.from('scenarios').delete().eq('id',key);
-    if(error){setSaveError("Failed to delete. Try again.");return;}
-    setScenarios(prev=>prev.filter(s=>s.key!==key));
+    if(!session){
+      const next=scenarios.filter(s=>s.key!==key);
+      setScenarios(next);saveDemoScenarios(next);
+    }else{
+      const{error}=await sbClient.from('scenarios').delete().eq('id',key);
+      if(error){setSaveError("Failed to delete. Try again.");return;}
+      setScenarios(prev=>prev.filter(s=>s.key!==key));
+    }
     {const next=new Set(compareIds);next.delete(key);setCompareIds(next);if(next.size===0)hideCompareBar();}
     setLoadedScenarioKey(prev=>prev===key?null:prev);
   }
   async function duplicateScenario(sc,newName){
     const payload={...sc};
     delete payload.key; delete payload.name; delete payload.created; delete payload.modified; delete payload.source;
+    if(!session){
+      const row={key:"demo:"+Date.now(),name:newName,...payload,created:Date.now(),modified:Date.now()};
+      const next=[row,...scenarios];
+      setScenarios(next);saveDemoScenarios(next);
+      return;
+    }
     try{
       const{error}=await sbClient.from('scenarios').insert({name:newName,data:payload});
       if(error)throw error;
@@ -2187,6 +2216,11 @@ function App(){
   async function renameScenario(key,newName){
     setSaveError("");
     if(scenarios.find(s=>s.name===newName&&s.key!==key)){setSaveError("That name is already taken.");return;}
+    if(!session){
+      const next=scenarios.map(s=>s.key===key?{...s,name:newName,modified:Date.now()}:s);
+      setScenarios(next);saveDemoScenarios(next);
+      return;
+    }
     const{error}=await sbClient.from('scenarios').update({name:newName,updated_at:new Date().toISOString()}).eq('id',key);
     if(error){setSaveError("Failed to rename. Try again.");return;}
     setScenarios(prev=>prev.map(s=>s.key===key?{...s,name:newName,modified:Date.now()}:s));
@@ -2203,7 +2237,7 @@ function App(){
   }
   useEffect(()=>{loadSharedScenarios();},[]);
   async function publishScenario(sc){
-    if(!currentUser){setShareError("Set a display name first (click ✏️ in the Saved & Published section).");return;}
+    if(!currentUser){setShareError(session?"Set a display name first (click ✏️ in the Saved & Published section).":"Sign in to publish scenarios.");return;}
     setShareError("");
     const{key:_k,name,created:_c,modified:_m,source:_s,...dataPayload}=sc;
     const{data:existing,error:lookupErr}=await sbClient.from('shared_scenarios').select('id').eq('scenario_key',sc.key).eq('owner',currentUser).maybeSingle();
@@ -2226,14 +2260,20 @@ function App(){
   }
   async function bulkDeleteScenarios(keys){
     const arr=[...keys];
-    const{error}=await sbClient.from('scenarios').delete().in('id',arr);
-    if(error){setSaveError("Failed to delete. Try again.");return;}
-    setScenarios(prev=>prev.filter(s=>!keys.has(s.key)));
+    if(!session){
+      const next=scenarios.filter(s=>!keys.has(s.key));
+      setScenarios(next);saveDemoScenarios(next);
+    }else{
+      const{error}=await sbClient.from('scenarios').delete().in('id',arr);
+      if(error){setSaveError("Failed to delete. Try again.");return;}
+      setScenarios(prev=>prev.filter(s=>!keys.has(s.key)));
+    }
     {const next=new Set(compareIds);arr.forEach(k=>next.delete(k));setCompareIds(next);if(next.size===0)hideCompareBar();}
     setLoadedScenarioKey(prev=>keys.has(prev)?null:prev);
   }
   async function bulkPublishScenarios(scs){
-    if(!currentUser||!scs.length)return;
+    if(!scs.length)return;
+    if(!currentUser){setShareError(session?"Set a display name first (click ✏️ in the Saved & Published section).":"Sign in to publish scenarios.");return;}
     setShareError("");
     try{
       await Promise.all(scs.map(async sc=>{
@@ -2287,12 +2327,20 @@ function App(){
         let name=rawName;let suffix=2;
         while(existingNames.has(name))name=`${rawName} (${suffix++})`;
         const payload={...result.snap,anchor:toInp(result.snap.anchor),mode:result.mode||"forward",gran:result.gran||gran};
+        const note=result.summary?` ${result.summary}`:"";
+        if(!session){
+          const row={key:"demo:"+Date.now(),name,...payload,created:Date.now(),modified:Date.now()};
+          const nextScenarios=[row,...scenarios];
+          setScenarios(nextScenarios);saveDemoScenarios(nextScenarios);
+          setLoadedScenarioKey(row.key);
+          setImportSuccess(`Imported & saved as "${name}".${note}`);setTimeout(()=>setImportSuccess(""),6000);
+          return;
+        }
         const{data,error}=await sbClient.from('scenarios').insert({name,data:payload}).select().single();
         if(error){setImportError("Imported but failed to save. Try saving manually.");return;}
         const saved=sbRow(data);
         setScenarios(prev=>[saved,...prev]);
         setLoadedScenarioKey(saved.key);
-        const note=result.summary?` ${result.summary}`:"";
         setImportSuccess(`Imported & saved as "${name}".${note}`);setTimeout(()=>setImportSuccess(""),6000);
       }catch(err){setImportError("Import failed: "+err.message);}
     };
@@ -2422,19 +2470,26 @@ function App(){
             <button key={item.lbl} onClick={()=>setDark(item.v)} style={{padding:"5px 11px",border:"none",cursor:"pointer",display:"flex",alignItems:"center",gap:5,fontSize:13,fontWeight:600,background:isDark===item.v?t.btnAct:t.btnBg,color:isDark===item.v?"#fff":t.btnText,transition:"background 0.15s"}}>{item.icon}{!mob&&item.lbl}</button>
           ))}
         </div>
-        <button onClick={()=>sbClient.auth.signOut()} title={"Signed in as "+currentUser}
-          style={{padding:"5px 10px",borderRadius:5,border:"1px solid "+t.border,cursor:"pointer",fontSize:12,fontWeight:600,background:t.btnBg,color:t.textMuted,display:"flex",alignItems:"center",gap:5,flexShrink:0,transition:"background 0.15s"}}
-          onMouseEnter={e=>{e.currentTarget.style.background=isDark?"#2a1a1a":"#fff4f4";e.currentTarget.style.color=t.dangerText;}}
-          onMouseLeave={e=>{e.currentTarget.style.background=t.btnBg;e.currentTarget.style.color=t.textMuted;}}>
-          {!mob&&<span style={{maxWidth:120,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{currentUser.split("@")[0]}</span>}
-          <span title="Sign out">⎋</span>
-        </button>
+        {session?(
+          <button onClick={()=>sbClient.auth.signOut()} title={"Signed in as "+currentUser}
+            style={{padding:"5px 10px",borderRadius:5,border:"1px solid "+t.border,cursor:"pointer",fontSize:12,fontWeight:600,background:t.btnBg,color:t.textMuted,display:"flex",alignItems:"center",gap:5,flexShrink:0,transition:"background 0.15s"}}
+            onMouseEnter={e=>{e.currentTarget.style.background=isDark?"#2a1a1a":"#fff4f4";e.currentTarget.style.color=t.dangerText;}}
+            onMouseLeave={e=>{e.currentTarget.style.background=t.btnBg;e.currentTarget.style.color=t.textMuted;}}>
+            {!mob&&<span style={{maxWidth:120,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{currentUser.split("@")[0]}</span>}
+            <span title="Sign out">⎋</span>
+          </button>
+        ):(
+          <button onClick={()=>setShowSignIn(true)} title="Sign in to save permanently & publish"
+            style={{padding:"5px 12px",borderRadius:5,border:"1px solid "+t.border,cursor:"pointer",fontSize:12,fontWeight:600,background:t.btnBg,color:t.textMuted,display:"flex",alignItems:"center",gap:5,flexShrink:0,transition:"background 0.15s"}}>
+            Sign In
+          </button>
+        )}
       </div>
     </div>
   );
 
   if(authLoading)return null;
-  if(!session)return<SignInScreen isDark={isDark} setDark={setDark} t={t}/>;
+  if(!session&&showSignIn)return<SignInScreen isDark={isDark} setDark={setDark} t={t} onBack={()=>setShowSignIn(false)}/>;
 
   return(
     <div className="theme-fade" style={{background:t.bg,color:t.text,fontFamily:"Inter,system-ui,sans-serif",minHeight:"100vh",padding:mob?"0 10px 8px":"0 16px 16px",userSelect:"none",boxSizing:"border-box"}}>
@@ -2451,6 +2506,16 @@ function App(){
         </div>
       </>)}
       {showBug&&<BugModal t={t} isDark={isDark} onClose={()=>setShowBug(false)}/>}
+      {!session&&(
+        <div style={{marginLeft:mob?-10:-16,marginRight:mob?-10:-16,marginBottom:mob?8:12,background:isDark?"#0e2340":"#eaf3ff",borderBottom:"1px solid #3b82f6",display:"flex",alignItems:"stretch"}}>
+          <div style={{width:10,flexShrink:0,background:"repeating-linear-gradient(45deg,#3b82f6,#3b82f6 5px,#1a1a1a 5px,#1a1a1a 10px)"}}/>
+          <div style={{padding:"8px 14px",fontSize:13,color:isDark?"#cfe4ff":"#0b3a75",lineHeight:1.5,display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
+            <span>🎭 <strong>Demo Mode</strong> — changes save to this browser only.</span>
+            <button onClick={()=>setShowSignIn(true)} style={{background:"none",border:"none",padding:0,color:isDark?"#7cb3ff":"#3b82f6",fontWeight:700,cursor:"pointer",textDecoration:"underline",fontSize:13}}>Sign in</button>
+            <span>to save permanently and publish.</span>
+          </div>
+        </div>
+      )}
       <div style={{marginLeft:mob?-10:-16,marginRight:mob?-10:-16,marginBottom:mob?8:12,background:"#fefce8",borderBottom:"1px solid #f5c800",display:"flex",alignItems:"stretch"}}>
         <div style={{width:10,flexShrink:0,background:"repeating-linear-gradient(45deg,#f5c800,#f5c800 5px,#1a1a1a 5px,#1a1a1a 10px)"}}/>
         <div style={{padding:"8px 14px",fontSize:13,color:"#1a1a1a",lineHeight:1.5}}><strong>Heads up:</strong> The timelines and scenarios in this tool contain placeholder data. Replace with your program's actual dates before use.</div>

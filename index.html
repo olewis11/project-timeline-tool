@@ -2507,11 +2507,11 @@ function App(){
       </>)}
       {showBug&&<BugModal t={t} isDark={isDark} onClose={()=>setShowBug(false)}/>}
       {!session&&(
-        <div style={{marginLeft:mob?-10:-16,marginRight:mob?-10:-16,marginBottom:mob?8:12,background:isDark?"#0e2340":"#eaf3ff",borderBottom:"1px solid #3b82f6",display:"flex",alignItems:"stretch"}}>
-          <div style={{width:10,flexShrink:0,background:"repeating-linear-gradient(45deg,#3b82f6,#3b82f6 5px,#1a1a1a 5px,#1a1a1a 10px)"}}/>
-          <div style={{padding:"8px 14px",fontSize:13,color:isDark?"#cfe4ff":"#0b3a75",lineHeight:1.5,display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
+        <div style={{marginLeft:mob?-10:-16,marginRight:mob?-10:-16,marginBottom:mob?8:12,background:"#fefce8",borderBottom:"1px solid #f5c800",display:"flex",alignItems:"stretch"}}>
+          <div style={{width:10,flexShrink:0,background:"repeating-linear-gradient(45deg,#f5c800,#f5c800 5px,#1a1a1a 5px,#1a1a1a 10px)"}}/>
+          <div style={{padding:"8px 14px",fontSize:13,color:"#1a1a1a",lineHeight:1.5,display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
             <span>🎭 <strong>Demo Mode</strong> — changes save to this browser only.</span>
-            <button onClick={()=>setShowSignIn(true)} style={{background:"none",border:"none",padding:0,color:isDark?"#7cb3ff":"#3b82f6",fontWeight:700,cursor:"pointer",textDecoration:"underline",fontSize:13}}>Sign in</button>
+            <button onClick={()=>setShowSignIn(true)} style={{background:"none",border:"none",padding:0,color:"#1a1a1a",fontWeight:700,cursor:"pointer",textDecoration:"underline",fontSize:13}}>Sign in</button>
             <span>to save permanently and publish.</span>
           </div>
         </div>
